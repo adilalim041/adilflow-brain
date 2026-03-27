@@ -367,7 +367,7 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
                     if (error.code === '23505') {
                         dupCount++;
                     } else {
-                        console.error(`Insert error: ${error.message}`);
+                        console.error(`Insert error: ${error.message} | code: ${error.code} | details: ${error.details}`, { url: article.url });
                         errorCount++;
                     }
                 } else {
@@ -375,6 +375,7 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
                 }
 
             } catch (e) {
+                console.error(`[BATCH] Article insert exception: ${e.message}`, { url: article.url });
                 errorCount++;
             }
         }
