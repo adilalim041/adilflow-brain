@@ -319,7 +319,7 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
                     .from('articles')
                     .select('id')
                     .eq('url_hash', article.url_hash)
-                    .single();
+                    .maybeSingle();
 
                 if (existing) {
                     dupCount++;
@@ -331,7 +331,7 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
                     .from('articles')
                     .select('id')
                     .eq('content_hash', article.content_hash)
-                    .single();
+                    .maybeSingle();
 
                 if (contentDup) {
                     dupCount++;
