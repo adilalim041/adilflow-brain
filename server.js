@@ -315,25 +315,25 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
         for (const article of articles) {
             try {
                 // 1. Проверка точного дубля по url_hash
-                const { data: existing } = await supabase
+                const { data: existingRows } = await supabase
                     .from('articles')
                     .select('id')
                     .eq('url_hash', article.url_hash)
-                    .maybeSingle();
+                    .limit(1);
 
-                if (existing) {
+                if (existingRows && existingRows.length > 0) {
                     dupCount++;
                     continue;
                 }
 
                 // 2. Проверка дубля по content_hash
-                const { data: contentDup } = await supabase
+                const { data: contentRows } = await supabase
                     .from('articles')
                     .select('id')
-                    .eq('content_hash', article.content_hash)
-                    .maybeSingle();
+                    .eq('content_hash', article.content_hash || '')
+                    .limit(1);
 
-                if (contentDup) {
+                if (contentRows && contentRows.length > 0) {
                     dupCount++;
                     continue;
                 }
