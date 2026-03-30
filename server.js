@@ -45,7 +45,7 @@ const ArticleBatchSchema = z.object({
         source_name: z.string().optional(),
         source_domain: z.string().optional(),
         niche: z.string().optional()
-    })).min(1).max(200),
+    }).passthrough()).min(1).max(200),
     niche: z.string().optional()
 }).passthrough();
 
