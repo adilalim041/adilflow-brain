@@ -761,6 +761,102 @@ app.post('/api/articles/:id/publish-failed', authMiddleware, async (req, res) =>
 
 
 // ═══════════════════════════════════════
+// ДАШБОРД: browse articles (read-only)
+// ═══════════════════════════════════════
+const BROWSE_COLUMNS = [
+    'id', 'url', 'niche', 'status',
+    'raw_title', 'raw_summary', 'top_image',
+    'generated_image', 'cover_image', 'card_image',
+    'headline', 'headline2',
+    'relevance_score', 'scores_detail',
+    'template_id', 'has_usable_media',
+    'published_channels', 'published_at',
+    'parsed_at', 'classified_at', 'generated_at',
+    'published_system_at', 'created_at', 'updated_at'
+].join(',');
+
+const ALLOWED_SORT_FIELDS = ['created_at', 'relevance_score', 'updated_at', 'parsed_at'];
+
+app.get('/api/articles/browse', authMiddleware, async (req, res) => {
+    try {
+        const { status, niche } = req.query;
+        const page = toInt(req.query.page, 1, 1, 1000);
+        const limit = toInt(req.query.limit, 20, 1, 50);
+        const sort = ALLOWED_SORT_FIELDS.includes(req.query.sort) ? req.query.sort : 'created_at';
+        const order = req.query.order === 'asc' ? true : false; // ascending = true
+
+        const offset = (page - 1) * limit;
+
+        // Count total matching rows
+        let countQuery = supabase.from('articles').select('id', { count: 'exact', head: true });
+        if (status) countQuery = countQuery.eq('status', status);
+        if (niche) countQuery = countQuery.eq('niche', niche);
+        const { count: total, error: countError } = await countQuery;
+        if (countError) throw countError;
+
+        // Fetch page
+        let query = supabase
+            .from('articles')
+            .select(BROWSE_COLUMNS)
+            .order(sort, { ascending: order })
+            .range(offset, offset + limit - 1);
+
+        if (status) query = query.eq('status', status);
+        if (niche) query = query.eq('niche', niche);
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        res.json({
+            success: true,
+            articles: data || [],
+            pagination: {
+                page,
+                limit,
+                total: total || 0,
+                pages: Math.ceil((total || 0) / limit)
+            }
+        });
+
+    } catch (e) {
+        logger.error({ err: e }, 'browse articles failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ═══════════════════════════════════════
+// ДАШБОРД: article detail (read-only)
+// ═══════════════════════════════════════
+app.get('/api/articles/:id', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data, error } = await supabase
+            .from('articles')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (error) {
+            if (error.code === 'PGRST116') {
+                return res.status(404).json({ error: 'Article not found' });
+            }
+            throw error;
+        }
+
+        // Remove embedding from response
+        delete data.embedding;
+
+        res.json({ success: true, article: data });
+
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'get article detail failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// ═══════════════════════════════════════
 // СТАТИСТИКА
 // ═══════════════════════════════════════
 app.get('/api/stats', authMiddleware, async (req, res) => {
