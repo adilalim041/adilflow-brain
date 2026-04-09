@@ -26,6 +26,17 @@ const { createClient } = require('@supabase/supabase-js');
 
 const logger = pino({ name: 'adilflow-brain' });
 
+// ═══════════════════════════════════════
+// ESM DEPS: p-retry (retry with backoff)
+// ═══════════════════════════════════════
+let pRetry, AbortError;
+
+const esmReady = (async () => {
+    const pRetryMod = await import('p-retry');
+    pRetry = pRetryMod.default;
+    AbortError = pRetryMod.AbortError;
+})();
+
 function validate(schema) {
     return (req, res, next) => {
         const result = schema.safeParse(req.body);
@@ -368,7 +379,7 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
                     if (error.code === '23505') {
                         dupCount++;
                     } else {
-                        console.error(`Insert error: ${error.message} | code: ${error.code} | details: ${error.details}`, { url: article.url });
+                        logger.error({ url: article.url, error: error.message, code: error.code, details: error.details }, 'Article insert error');
                         errorCount++;
                     }
                 } else {
@@ -376,12 +387,12 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
                 }
 
             } catch (e) {
-                console.error(`[BATCH] Article insert exception: ${e.message}`, { url: article.url });
+                logger.error({ url: article.url, error: e.message }, 'Article insert exception');
                 errorCount++;
             }
         }
 
-        console.log(`[BATCH] ${niche}: ${newCount} new, ${dupCount} dups, ${errorCount} errors (of ${articles.length})`);
+        logger.info({ niche, newCount, dupCount, errorCount, total: articles.length }, 'Batch insert complete');
 
         res.json({
             success: true,
@@ -392,7 +403,7 @@ app.post('/api/articles/batch', authMiddleware, validate(ArticleBatchSchema), as
         });
 
     } catch (e) {
-        console.error(`[BATCH ERROR] ${e.message}`);
+        logger.error({ error: e.message }, 'Batch endpoint error');
         res.status(500).json({ error: e.message });
     }
 });
@@ -458,15 +469,15 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
                 else rejected++;
 
             } catch (e) {
-                console.error(`[CLASSIFY] Error on article ${article.id}: ${e.message}`);
+                logger.error({ articleId: article.id, error: e.message }, 'Classification error on article');
             }
         }
 
-        console.log(`[CLASSIFY] ${classified} classified, ${rejected} rejected (of ${articles.length})`);
+        logger.info({ classified, rejected, total: articles.length }, 'Classification batch complete');
         res.json({ success: true, classified, rejected, total: articles.length });
 
     } catch (e) {
-        console.error(`[CLASSIFY ERROR] ${e.message}`);
+        logger.error({ error: e.message }, 'Classify endpoint error');
         res.status(500).json({ error: e.message });
     }
 });
@@ -484,27 +495,44 @@ Summary: ${(article.raw_summary || article.raw_text.slice(0, 500))}
 
 Respond with ONLY a number 1-10. Nothing else.`;
 
+    const start = Date.now();
     try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: [{ role: 'user', content: prompt }],
-                max_tokens: 5,
-                temperature: 0.1
-            })
+        const data = await pRetry(async () => {
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o-mini',
+                    messages: [{ role: 'user', content: prompt }],
+                    max_tokens: 5,
+                    temperature: 0.1
+                })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                if (response.status >= 400 && response.status < 500) {
+                    throw new AbortError(`OpenAI ${response.status}: ${result.error?.message || 'Client error'}`);
+                }
+                throw new Error(`OpenAI ${response.status}: ${result.error?.message || 'Server error'}`);
+            }
+            return result;
+        }, {
+            retries: 3,
+            minTimeout: 1000,
+            onFailedAttempt: (err) => {
+                logger.warn({ provider: 'openai', articleId: article.id, attempt: err.attemptNumber, retriesLeft: err.retriesLeft, error: err.message }, 'GPT classify retry');
+            }
         });
 
-        const data = await response.json();
         const text = data.choices?.[0]?.message?.content?.trim() || '5';
         const score = parseFloat(text);
+        logger.info({ provider: 'openai', latencyMs: Date.now() - start, articleId: article.id, score }, 'GPT classification ok');
         return isNaN(score) ? 5 : Math.min(10, Math.max(1, score));
     } catch (e) {
-        console.error(`[GPT] ${e.message}`);
+        logger.error({ provider: 'openai', latencyMs: Date.now() - start, articleId: article.id, error: e.message }, 'GPT classification failed, using default score');
         return 5;
     }
 }
@@ -1090,34 +1118,51 @@ async function schedulerRun(name, fn) {
     }
 }
 
-async function triggerClassify() {
-    // Self-call — Brain's own classify endpoint
-    const res = await fetch(`http://localhost:${process.env.PORT || 3001}/api/classify`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niche: SCHEDULE_NICHE, limit: 20 })
+async function schedulerFetch(url, options, label) {
+    return pRetry(async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 60000);
+        try {
+            const res = await fetch(url, { ...options, signal: controller.signal });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `${label} failed: ${res.status}`);
+            return data;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }, {
+        retries: 2,
+        minTimeout: 3000,
+        onFailedAttempt: (err) => {
+            logger.warn({ scheduler: label, attempt: err.attemptNumber, retriesLeft: err.retriesLeft, error: err.message }, 'Scheduler trigger retry');
+        }
     });
-    return res.json();
+}
+
+async function triggerClassify() {
+    return schedulerFetch(
+        `http://localhost:${process.env.PORT || 3001}/api/classify`,
+        { method: 'POST', headers: { Authorization: `Bearer ${process.env.API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ niche: SCHEDULE_NICHE, limit: 20 }) },
+        'classify'
+    );
 }
 
 async function triggerGenerate() {
     if (!GENERATOR_URL) throw new Error('GENERATOR_URL not set');
-    const res = await fetch(`${GENERATOR_URL}/api/generate`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${GENERATOR_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niche: SCHEDULE_NICHE, count: 5 })
-    });
-    return res.json();
+    return schedulerFetch(
+        `${GENERATOR_URL}/api/generate`,
+        { method: 'POST', headers: { Authorization: `Bearer ${GENERATOR_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ niche: SCHEDULE_NICHE, count: 5 }) },
+        'generate'
+    );
 }
 
 async function triggerPublish() {
     if (!PUBLISHER_URL) throw new Error('PUBLISHER_URL not set');
-    const res = await fetch(`${PUBLISHER_URL}/api/publish`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${PUBLISHER_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niche: SCHEDULE_NICHE, limit: 3 })
-    });
-    return res.json();
+    return schedulerFetch(
+        `${PUBLISHER_URL}/api/publish`,
+        { method: 'POST', headers: { Authorization: `Bearer ${PUBLISHER_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ niche: SCHEDULE_NICHE, limit: 3 }) },
+        'publish'
+    );
 }
 
 app.get('/api/scheduler/status', authMiddleware, (req, res) => {
@@ -1161,8 +1206,13 @@ if (process.env.SENTRY_DSN) {
 // ЗАПУСК
 // ═══════════════════════════════════════
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-    logger.info(`AdilFlow Brain listening on port ${PORT}`);
-    logger.info(`Supabase: ${process.env.SUPABASE_URL ? 'connected' : 'NOT SET'}`);
-    startScheduler();
+esmReady.then(() => {
+    app.listen(PORT, () => {
+        logger.info(`AdilFlow Brain listening on port ${PORT}`);
+        logger.info(`Supabase: ${process.env.SUPABASE_URL ? 'connected' : 'NOT SET'}`);
+        startScheduler();
+    });
+}).catch((err) => {
+    logger.fatal({ error: err.message }, 'Failed to load ESM dependencies');
+    process.exit(1);
 });
