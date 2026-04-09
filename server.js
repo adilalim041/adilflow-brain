@@ -149,6 +149,9 @@ function mapPlaybookRecord(record) {
         image_rules: record.image_rules || [],
         image_prompt_template: record.image_prompt_template || '',
         examples: record.examples || [],
+        system_prompt: record.system_prompt || null,
+        image_system_prompt: record.image_system_prompt || null,
+        user_prompt_template: record.user_prompt_template || null,
         is_active: record.is_active !== false,
         created_at: record.created_at || null,
         updated_at: record.updated_at || null
@@ -1153,6 +1156,9 @@ app.post('/api/playbooks', authMiddleware, async (req, res) => {
             image_rules: req.body?.image_rules || [],
             image_prompt_template: req.body?.image_prompt_template || '',
             examples: req.body?.examples || [],
+            system_prompt: req.body?.system_prompt || null,
+            image_system_prompt: req.body?.image_system_prompt || null,
+            user_prompt_template: req.body?.user_prompt_template || null,
             is_active: req.body?.is_active !== false
         };
 
