@@ -761,6 +761,144 @@ app.post('/api/articles/:id/publish-failed', authMiddleware, async (req, res) =>
 
 
 // ═══════════════════════════════════════
+// ДАШБОРД: article actions
+// ═══════════════════════════════════════
+
+// Classify a single article by ID
+app.post('/api/articles/:id/classify-one', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data: article, error: loadError } = await supabase
+            .from('articles')
+            .select('id, raw_title, raw_text, raw_summary, niche, status')
+            .eq('id', id)
+            .single();
+
+        if (loadError) {
+            if (loadError.code === 'PGRST116') {
+                return res.status(404).json({ error: 'Article not found' });
+            }
+            throw loadError;
+        }
+
+        if (article.status !== 'raw') {
+            return res.status(400).json({ error: 'Article is not in raw status' });
+        }
+
+        // Fetch niche config for GPT prompt
+        const { data: nicheConfig } = await supabase
+            .from('niches')
+            .select('gpt_system_prompt, language')
+            .eq('id', article.niche)
+            .single();
+
+        const score = await classifyWithGPT(article, nicheConfig);
+        const newStatus = score >= 6 ? 'classified' : 'rejected';
+
+        const { error: updateError } = await supabase
+            .from('articles')
+            .update({
+                relevance_score: score,
+                scores_detail: { gpt: score },
+                status: newStatus,
+                classified_at: new Date().toISOString()
+            })
+            .eq('id', id);
+
+        if (updateError) throw updateError;
+
+        logger.info({ articleId: id, score, status: newStatus }, 'Single article classified');
+        res.json({ success: true, article_id: id, score, status: newStatus });
+
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'classify-one failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Manually reject an article
+app.post('/api/articles/:id/reject', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data: article, error: loadError } = await supabase
+            .from('articles')
+            .select('id')
+            .eq('id', id)
+            .single();
+
+        if (loadError) {
+            if (loadError.code === 'PGRST116') {
+                return res.status(404).json({ error: 'Article not found' });
+            }
+            throw loadError;
+        }
+
+        const { error: updateError } = await supabase
+            .from('articles')
+            .update({ status: 'rejected' })
+            .eq('id', id);
+
+        if (updateError) throw updateError;
+
+        logger.info({ articleId: id }, 'Article manually rejected');
+        res.json({ success: true, article_id: id });
+
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'reject failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Requeue an article back to classified status for re-generation
+app.post('/api/articles/:id/requeue', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data: article, error: loadError } = await supabase
+            .from('articles')
+            .select('id')
+            .eq('id', id)
+            .single();
+
+        if (loadError) {
+            if (loadError.code === 'PGRST116') {
+                return res.status(404).json({ error: 'Article not found' });
+            }
+            throw loadError;
+        }
+
+        const { error: updateError } = await supabase
+            .from('articles')
+            .update({
+                status: 'classified',
+                headline: null,
+                headline2: null,
+                body: null,
+                conclusion: null,
+                cover_image: null,
+                card_image: null,
+                generated_image: null,
+                image_prompt: null,
+                template_id: null,
+                generated_at: null
+            })
+            .eq('id', id);
+
+        if (updateError) throw updateError;
+
+        logger.info({ articleId: id }, 'Article requeued to classified');
+        res.json({ success: true, article_id: id });
+
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'requeue failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// ═══════════════════════════════════════
 // ДАШБОРД: browse articles (read-only)
 // ═══════════════════════════════════════
 const BROWSE_COLUMNS = [
