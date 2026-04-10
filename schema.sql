@@ -152,6 +152,8 @@ create table if not exists channel_profiles (
     posting_mode    text default 'manual',
     priority        int default 100,
     settings        jsonb default '{}'::jsonb,
+    ig_user_id      text,
+    ig_access_token text,
     is_active       boolean default true,
     created_at      timestamptz not null default now(),
     updated_at      timestamptz not null default now()

@@ -1088,6 +1088,8 @@ app.post('/api/channel-profiles', authMiddleware, async (req, res) => {
             posting_mode: req.body?.posting_mode || 'manual',
             priority: toInt(req.body?.priority, 100, 1, 1000),
             settings: req.body?.settings || {},
+            ig_user_id: req.body?.ig_user_id || null,
+            ig_access_token: req.body?.ig_access_token || null,
             is_active: req.body?.is_active !== false
         };
 
@@ -1108,6 +1110,48 @@ app.post('/api/channel-profiles', authMiddleware, async (req, res) => {
 
         res.json({ success: true, profile: data });
     } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/channel-profiles/credentials', authMiddleware, async (req, res) => {
+    try {
+        const { niche, platform = 'instagram' } = req.query;
+
+        if (!niche) {
+            return res.status(400).json({ error: 'niche query parameter is required' });
+        }
+
+        const { data, error } = await supabase
+            .from('channel_profiles')
+            .select('key, niche, ig_user_id, ig_access_token')
+            .eq('platform', platform)
+            .eq('niche', niche)
+            .eq('is_active', true)
+            .order('priority', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+        if (error) {
+            if (isMissingTableError(error)) return optionalTableResponse(res, 'channel_profiles');
+            throw error;
+        }
+
+        if (!data || !data.ig_user_id || !data.ig_access_token) {
+            return res.json({ success: true, credentials: null });
+        }
+
+        res.json({
+            success: true,
+            credentials: {
+                ig_user_id: data.ig_user_id,
+                ig_access_token: data.ig_access_token,
+                key: data.key,
+                niche: data.niche
+            }
+        });
+    } catch (e) {
+        logger.error({ err: e, niche: req.query.niche }, 'Failed to fetch channel credentials');
         res.status(500).json({ error: e.message });
     }
 });
