@@ -86,6 +86,84 @@ class CircuitBreaker {
 const openaiBreaker = new CircuitBreaker({ threshold: 5, resetTimeout: 30000, name: 'openai-classify' });
 
 // ═══════════════════════════════════════
+// CAPTION EMBEDDING
+// Generates a 384-dim vector for a caption text using text-embedding-3-small.
+// Reuses openaiBreaker so an OpenAI outage doesn't block publish flow.
+// Returns null on any failure — callers must handle gracefully (fail-open).
+// ═══════════════════════════════════════
+
+// Cache for /health caption_embedding_coverage — expensive count, refreshed
+// every 5 minutes to avoid hammering Supabase on every health poll.
+let _coverageCache = null;
+let _coverageCacheAt = 0;
+const COVERAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function embedCaption(text) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+        logger.warn({ action: 'embed_caption', outcome: 'no_api_key' }, 'OPENAI_API_KEY not set — skipping caption embedding');
+        return null;
+    }
+
+    // Short-circuit when breaker is OPEN to avoid queuing another failure.
+    if (openaiBreaker.state === 'OPEN' && Date.now() < openaiBreaker.nextAttempt) {
+        logger.warn({ action: 'embed_caption', outcome: 'cb_open', breaker: openaiBreaker.getStatus() }, 'Caption embed skipped — circuit breaker OPEN');
+        return null;
+    }
+
+    const start = Date.now();
+    try {
+        const data = await openaiBreaker.exec(() => pRetry(async () => {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            try {
+                const response = await fetch('https://api.openai.com/v1/embeddings', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'text-embedding-3-small',
+                        dimensions: 384,
+                        input: text
+                    }),
+                    signal: controller.signal
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    if (response.status >= 400 && response.status < 500) {
+                        throw new AbortError(`OpenAI embeddings ${response.status}: ${result.error?.message || 'Client error'}`);
+                    }
+                    throw new Error(`OpenAI embeddings ${response.status}: ${result.error?.message || 'Server error'}`);
+                }
+                return result;
+            } finally {
+                clearTimeout(timeout);
+            }
+        }, {
+            retries: 2,
+            minTimeout: 1000,
+            onFailedAttempt: (err) => {
+                logger.warn({ action: 'embed_caption', attempt: err.attemptNumber, retriesLeft: err.retriesLeft, error: err.message }, 'Caption embed retry');
+            }
+        }));
+
+        const embedding = data?.data?.[0]?.embedding;
+        if (!Array.isArray(embedding) || embedding.length !== 384) {
+            throw new Error(`Unexpected embedding shape: length=${embedding?.length}`);
+        }
+
+        logger.info({ action: 'embed_caption', latencyMs: Date.now() - start, outcome: 'ok', dims: 384 }, 'Caption embedding ok');
+        return embedding;
+
+    } catch (e) {
+        logger.warn({ action: 'embed_caption', latencyMs: Date.now() - start, outcome: 'failed', error: e.message }, 'Caption embedding failed — continuing without embedding');
+        return null;
+    }
+}
+
+// ═══════════════════════════════════════
 // ESM DEPS: p-retry (retry with backoff)
 // ═══════════════════════════════════════
 let pRetry, AbortError;
@@ -140,6 +218,13 @@ const PublishedSchema = z.object({
     ig_post_id: z.string().optional(),
     permalink: z.string().optional(),
     channel_data: z.any().optional()
+});
+
+const CheckSimilaritySchema = z.object({
+    caption: z.string().min(10).max(5000),
+    exclude_article_id: z.number().int().positive().optional(),
+    window_days: z.number().int().min(1).max(90).default(30),
+    threshold: z.number().min(0.5).max(0.99).default(0.92)
 });
 
 const app = express();
@@ -400,12 +485,46 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
     try {
         const { count } = await supabase.from('articles').select('*', { count: 'exact', head: true });
+
+        // caption_embedding_coverage: refresh at most once every 5 minutes
+        // so health polling doesn't cause expensive aggregation on every call.
+        let captionEmbeddingCoverage = _coverageCache;
+        const now = Date.now();
+        if (!_coverageCache || now - _coverageCacheAt > COVERAGE_CACHE_TTL_MS) {
+            try {
+                const { count: totalPublished } = await supabase
+                    .from('articles')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('status', 'published');
+
+                const { count: withEmbedding } = await supabase
+                    .from('articles')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('status', 'published')
+                    .not('caption_embedding', 'is', null);
+
+                const tp = totalPublished || 0;
+                const we = withEmbedding || 0;
+                captionEmbeddingCoverage = {
+                    total_published: tp,
+                    with_embedding: we,
+                    pct: tp > 0 ? Math.round((we / tp) * 100) : 0
+                };
+                _coverageCache = captionEmbeddingCoverage;
+                _coverageCacheAt = now;
+            } catch (coverageErr) {
+                // Non-fatal — column may not exist before migration is run
+                captionEmbeddingCoverage = { error: coverageErr.message };
+            }
+        }
+
         res.json({
             status: 'ok',
             articles: count,
             breakers: {
                 'openai-classify': openaiBreaker.getStatus()
-            }
+            },
+            caption_embedding_coverage: captionEmbeddingCoverage
         });
     } catch (e) {
         res.status(500).json({ status: 'error', message: e.message });
@@ -712,6 +831,31 @@ app.post('/api/articles/:id/generated', authMiddleware, async (req, res) => {
             .eq('id', id);
 
         if (error) throw error;
+
+        // Fire-and-forget: embed caption in the background so the main response
+        // is not blocked. If embedding fails we log a warn but don't fail the
+        // endpoint — an article without caption_embedding just won't appear in
+        // similarity checks until the backfill script is run.
+        const captionText = telegram_caption || body || null;
+        if (captionText) {
+            embedCaption(captionText).then((emb) => {
+                if (!emb) return; // embedCaption already logged the failure
+                return supabase
+                    .from('articles')
+                    .update({ caption_embedding: emb })
+                    .eq('id', id)
+                    .then(({ error: embError }) => {
+                        if (embError) {
+                            logger.warn({ action: 'save_caption_embedding', articleId: id, error: embError.message }, 'Failed to save caption embedding');
+                        } else {
+                            logger.info({ action: 'save_caption_embedding', articleId: id, outcome: 'ok' }, 'Caption embedding saved');
+                        }
+                    });
+            }).catch((e) => {
+                logger.warn({ action: 'save_caption_embedding', articleId: id, error: e.message }, 'Caption embedding fire-and-forget threw');
+            });
+        }
+
         res.json({ success: true });
 
     } catch (e) {
@@ -1125,6 +1269,72 @@ app.post('/api/articles/:id/save-ig-container', authMiddleware, validate(SaveIgC
 
     } catch (e) {
         logger.error({ err: e, articleId: req.params.id }, 'save-ig-container failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// ═══════════════════════════════════════
+// КРОСС-КАНАЛЬНАЯ ЗАЩИТА ОТ ДУБЛЕЙ
+// Семантическая проверка caption перед публикацией.
+// Fail-open: если embedding упал — возвращаем { unique: true, embedding_failed: true }.
+// Не блокируем публикацию при проблемах с OpenAI.
+// ═══════════════════════════════════════
+app.post('/api/captions/check-similarity', authMiddleware, validate(CheckSimilaritySchema), async (req, res) => {
+    try {
+        const { caption, exclude_article_id, window_days, threshold } = req.body;
+
+        // Step 1: embed the caption
+        const embedding = await embedCaption(caption);
+
+        if (!embedding) {
+            // Embedding unavailable — fail-open to avoid blocking publish flow
+            logger.warn({ action: 'check_caption_similarity', articleId: exclude_article_id, outcome: 'embedding_failed' }, 'Caption similarity check skipped — embedding unavailable');
+            return res.json({ unique: true, embedding_failed: true });
+        }
+
+        // Step 2: find the closest published caption via pgvector RPC
+        const { data: rows, error: rpcError } = await supabase.rpc('find_similar_caption', {
+            query_embedding: embedding,
+            window_days,
+            exclude_id: exclude_article_id ?? null
+        });
+
+        if (rpcError) {
+            // RPC may not exist before migration is run — fail-open
+            logger.warn({ action: 'check_caption_similarity', articleId: exclude_article_id, rpcError: rpcError.message, outcome: 'rpc_failed' }, 'find_similar_caption RPC failed — fail-open');
+            return res.json({ unique: true, embedding_failed: true });
+        }
+
+        const closest = rows && rows.length > 0 ? rows[0] : null;
+        const similarity = closest ? closest.similarity : null;
+
+        // Step 3: compare against threshold
+        if (closest && similarity >= threshold) {
+            logger.info({
+                action: 'check_caption_similarity',
+                articleId: exclude_article_id,
+                matchedArticleId: closest.id,
+                matchedNiche: closest.niche,
+                similarity,
+                threshold,
+                outcome: 'duplicate_detected'
+            }, 'Caption similarity above threshold — potential duplicate');
+
+            return res.json({
+                unique: false,
+                similarity,
+                matched_article_id: closest.id,
+                matched_niche: closest.niche,
+                matched_caption_preview: closest.caption_preview
+            });
+        }
+
+        logger.info({ action: 'check_caption_similarity', articleId: exclude_article_id, closestSimilarity: similarity, threshold, outcome: 'unique' }, 'Caption similarity check passed');
+        return res.json({ unique: true, closest_similarity: similarity });
+
+    } catch (e) {
+        logger.error({ err: e, action: 'check_caption_similarity' }, 'check-similarity endpoint error');
         res.status(500).json({ error: e.message });
     }
 });

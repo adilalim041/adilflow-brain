@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "backfill:embeddings": "node scripts/backfill_caption_embeddings.js"
   },
   "dependencies": {
     "@sentry/node": "^10.46.0",
