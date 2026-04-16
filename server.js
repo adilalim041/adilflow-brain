@@ -39,6 +39,53 @@ const { createClient } = require('@supabase/supabase-js');
 const logger = pino({ name: 'adilflow-brain' });
 
 // ═══════════════════════════════════════
+// CIRCUIT BREAKER
+// Copied from adilflow_generator/server.js — same pattern.
+// Used to wrap OpenAI classify calls so an OpenAI outage doesn't
+// cause infinite retry storms inside the scheduler tick.
+// ═══════════════════════════════════════
+class CircuitBreaker {
+    constructor({ threshold = 5, resetTimeout = 30000, name = 'circuit' } = {}) {
+        this.threshold = threshold;
+        this.resetTimeout = resetTimeout;
+        this.name = name;
+        this.failures = 0;
+        this.state = 'CLOSED';
+        this.nextAttempt = 0;
+    }
+    async exec(fn) {
+        if (this.state === 'OPEN') {
+            if (Date.now() < this.nextAttempt) {
+                throw new Error(`Circuit breaker [${this.name}] is OPEN — service unavailable`);
+            }
+            this.state = 'HALF_OPEN';
+        }
+        try {
+            const result = await fn();
+            this.onSuccess();
+            return result;
+        } catch (error) {
+            this.onFailure();
+            throw error;
+        }
+    }
+    onSuccess() { this.failures = 0; this.state = 'CLOSED'; }
+    onFailure() {
+        this.failures++;
+        if (this.failures >= this.threshold) {
+            this.state = 'OPEN';
+            this.nextAttempt = Date.now() + this.resetTimeout;
+            logger.warn({ breaker: this.name, failures: this.failures }, 'Circuit breaker OPEN');
+        }
+    }
+    getStatus() { return { state: this.state, failures: this.failures }; }
+}
+
+// Single shared instance for OpenAI classify calls.
+// threshold:5 means 5 consecutive failures → OPEN for 30s, then HALF_OPEN probe.
+const openaiBreaker = new CircuitBreaker({ threshold: 5, resetTimeout: 30000, name: 'openai-classify' });
+
+// ═══════════════════════════════════════
 // ESM DEPS: p-retry (retry with backoff)
 // ═══════════════════════════════════════
 let pRetry, AbortError;
@@ -353,7 +400,13 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
     try {
         const { count } = await supabase.from('articles').select('*', { count: 'exact', head: true });
-        res.json({ status: 'ok', articles: count });
+        res.json({
+            status: 'ok',
+            articles: count,
+            breakers: {
+                'openai-classify': openaiBreaker.getStatus()
+            }
+        });
     } catch (e) {
         res.status(500).json({ status: 'error', message: e.message });
     }
@@ -537,6 +590,13 @@ async function classifyWithGPT(article, nicheConfig) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return 5; // Без ключа — средний балл
 
+    // Short-circuit when circuit breaker is OPEN — return fallback score immediately
+    // so a sustained OpenAI outage doesn't stall the entire classify batch.
+    if (openaiBreaker.state === 'OPEN' && Date.now() < openaiBreaker.nextAttempt) {
+        logger.warn({ provider: 'openai', articleId: article.id, breaker: openaiBreaker.getStatus() }, 'GPT classify skipped — circuit breaker OPEN, using fallback score');
+        return 5;
+    }
+
     const prompt = `Rate this article's relevance and newsworthiness on a scale of 1-10.
 Consider: is it a real news/discovery (not an ad or opinion piece)? Is it recent? Is it interesting for a general audience?
 
@@ -547,7 +607,7 @@ Respond with ONLY a number 1-10. Nothing else.`;
 
     const start = Date.now();
     try {
-        const data = await pRetry(async () => {
+        const data = await openaiBreaker.exec(() => pRetry(async () => {
             const response = await fetch('https://api.openai.com/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -575,7 +635,7 @@ Respond with ONLY a number 1-10. Nothing else.`;
             onFailedAttempt: (err) => {
                 logger.warn({ provider: 'openai', articleId: article.id, attempt: err.attemptNumber, retriesLeft: err.retriesLeft, error: err.message }, 'GPT classify retry');
             }
-        });
+        }));
 
         const text = data.choices?.[0]?.message?.content?.trim() || '5';
         const score = parseFloat(text);
@@ -1695,6 +1755,35 @@ const schedulerLog = [];
 
 async function schedulerRun(name, fn) {
     const start = Date.now();
+
+    // ── Postgres advisory lock (session-level) ───────────────────────────────
+    // Prevents double-execution when Railway overlaps old and new pods during a
+    // deploy, or if Brain is ever scaled to >1 instance.
+    //
+    // Pooling caveat: pg_try_advisory_lock is session-level. If the Supabase
+    // client connects via pgBouncer transaction-mode (port 6543), the lock may
+    // be silently dropped when pgBouncer recycles the backend session between
+    // rpc() calls. Use the direct DB URL (port 5432) for Brain to be safe.
+    // A stale lock from a crashed pod is automatically released when pgBouncer
+    // recycles that session — lock lifetime ≈ tick duration (30–120s).
+    let lockAcquired = false;
+    try {
+        const { data: locked, error: lockErr } = await supabase.rpc('try_scheduler_lock');
+        if (lockErr) {
+            // RPC not deployed yet (pre-migration) — log and proceed without lock.
+            logger.warn({ action: 'scheduler_tick', name, lockErr: lockErr.message }, 'Advisory lock RPC unavailable, running without lock');
+        } else if (!locked) {
+            logger.info({ action: 'scheduler_tick', name, outcome: 'skipped_lock_held' }, '[Scheduler] Another pod holds the lock — skipping tick');
+            return;
+        } else {
+            lockAcquired = true;
+            logger.info({ action: 'scheduler_tick', name, outcome: 'acquired' }, '[Scheduler] Advisory lock acquired');
+        }
+    } catch (lockEx) {
+        // Network error contacting Supabase — log and proceed (fail-open for scheduler).
+        logger.warn({ action: 'scheduler_tick', name, error: lockEx.message }, 'Advisory lock check threw, running without lock');
+    }
+
     try {
         const result = await fn();
         const entry = { name, ok: true, duration: Date.now() - start, at: new Date().toISOString(), result };
@@ -1706,6 +1795,17 @@ async function schedulerRun(name, fn) {
         schedulerLog.push(entry);
         if (schedulerLog.length > 100) schedulerLog.shift();
         logger.error(entry, `[Scheduler] ${name} FAILED`);
+    } finally {
+        // Always release — even if fn() threw. Ignore release errors to prevent
+        // masking the original tick failure in the caller.
+        if (lockAcquired) {
+            try {
+                await supabase.rpc('release_scheduler_lock');
+                logger.info({ action: 'scheduler_tick', name, outcome: 'released' }, '[Scheduler] Advisory lock released');
+            } catch (unlockEx) {
+                logger.warn({ action: 'scheduler_tick', name, error: unlockEx.message }, 'Advisory lock release failed (non-fatal)');
+            }
+        }
     }
 }
 
