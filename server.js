@@ -8,6 +8,16 @@
 
 require('dotenv').config();
 
+// ═══════════════════════════════════════
+// FAIL-CLOSED: abort immediately if API_KEY is not set.
+// An unprotected Brain endpoint can destroy production data.
+// ═══════════════════════════════════════
+const _startupLogger = require('pino')({ name: 'adilflow-brain-startup' });
+if (!process.env.API_KEY) {
+    _startupLogger.fatal('API_KEY environment variable is not set. Refusing to start.');
+    process.exit(1);
+}
+
 const Sentry = require('@sentry/node');
 if (process.env.SENTRY_DSN) {
     Sentry.init({
@@ -18,6 +28,8 @@ if (process.env.SENTRY_DSN) {
 }
 
 const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { z } = require('zod');
 const pino = require('pino');
@@ -65,9 +77,44 @@ const ClassifySchema = z.object({
     limit: z.number().int().min(1).max(100).default(20)
 }).passthrough();
 
+// Schemas for publish idempotency endpoints
+const AcquireLeaseSchema = z.object({
+    lease_minutes: z.number().int().min(1).max(60).optional()
+});
+
+const SaveIgContainerSchema = z.object({
+    ig_container_id: z.string().min(1)
+});
+
+const PublishedSchema = z.object({
+    channel: z.string().optional(),
+    message_id: z.union([z.string(), z.number()]).optional(),
+    external_id: z.union([z.string(), z.number()]).optional(),
+    ig_post_id: z.string().optional(),
+    permalink: z.string().optional(),
+    channel_data: z.any().optional()
+});
+
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '10mb' }));
+
+// ═══════════════════════════════════════
+// SECURITY: helmet + CORS
+// ═══════════════════════════════════════
+app.use(helmet());
+
+// CORS: whitelist from CORS_ALLOWED_ORIGINS (comma-separated).
+// If empty/unset, allow only localhost origins (development safety).
+const _rawOrigins = (process.env.CORS_ALLOWED_ORIGINS || '').trim();
+const _corsOrigins = _rawOrigins
+    ? _rawOrigins.split(',').map((s) => s.trim()).filter(Boolean)
+    : [/^http:\/\/localhost(:\d+)?$/];
+app.use(cors({ origin: _corsOrigins, credentials: false }));
+
+// Body parsing: default 1mb for all routes.
+// /api/articles/batch gets its own 2mb parser mounted before auth.
+app.use('/api/articles/batch', express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '1mb' }));
 app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health' } }));
 
 // Rate limiting
@@ -680,48 +727,103 @@ app.get('/api/articles/publish', authMiddleware, async (req, res) => {
 
 
 // ═══════════════════════════════════════
-// ПУБЛИКАТОР → МОЗГ: отметить как опубликовано
+// ПУБЛИКАТОР → МОЗГ: отметить как опубликовано (атомарно)
+// Transition: publishing → published, idempotent on already-published.
 // ═══════════════════════════════════════
-app.post('/api/articles/:id/published', authMiddleware, async (req, res) => {
+app.post('/api/articles/:id/published', authMiddleware, validate(PublishedSchema), async (req, res) => {
     try {
         const { id } = req.params;
-        const { channel, message_id, external_id, permalink, channel_data } = req.body;
+        const { channel, message_id, external_id, ig_post_id, permalink, channel_data } = req.body;
+        const now = new Date().toISOString();
 
-        // Получаем текущий published_channels
-        const { data: article } = await supabase
+        // Step 1: read current row (need published_channels + status for idempotency check)
+        const { data: article, error: loadError } = await supabase
             .from('articles')
-            .select('published_channels, scores_detail')
+            .select('status, published_channels, scores_detail, ig_container_id')
             .eq('id', id)
-            .single();
+            .maybeSingle();
 
-        const channels = article?.published_channels || [];
+        if (loadError) throw loadError;
+        if (!article) return res.status(404).json({ error: 'Article not found' });
+
+        // Idempotency: if already published, return the existing data as success
+        if (article.status === 'published') {
+            logger.info({ articleId: id, action: 'mark_published', outcome: 'already_published' }, 'Article already published — idempotent OK');
+            return res.json({
+                success: true,
+                idempotent: true,
+                published_channels: article.published_channels || []
+            });
+        }
+
+        // Guard: only allow transition from 'publishing'
+        if (article.status !== 'publishing') {
+            logger.warn({ articleId: id, action: 'mark_published', outcome: 'wrong_status', status: article.status }, 'Cannot mark published — not in publishing status');
+            return res.status(409).json({
+                error: 'wrong_status',
+                message: `Article is in status '${article.status}', expected 'publishing'`,
+                status: article.status
+            });
+        }
+
+        // Build updated published_channels entry
+        const channels = Array.isArray(article.published_channels) ? article.published_channels : [];
         channels.push({
-            channel,
-            message_id: message_id || external_id || null,
-            external_id: external_id || message_id || null,
+            channel: channel || 'instagram',
+            message_id: message_id || external_id || ig_post_id || null,
+            external_id: external_id || message_id || ig_post_id || null,
+            ig_post_id: ig_post_id || null,
             permalink: permalink || null,
             channel_data: channel_data || null,
-            published_at: new Date().toISOString()
+            published_at: now
         });
 
-        const { error } = await supabase
+        // Atomic update: only succeeds if status is still 'publishing'
+        const { data: updated, error: updateError } = await supabase
             .from('articles')
             .update({
                 published_channels: channels,
                 status: 'published',
-                published_system_at: new Date().toISOString(),
-                scores_detail: mergeScoreDetails(article?.scores_detail, {
+                published_system_at: now,
+                ig_container_id: null, // clear container after successful publish
+                publish_lease_until: null,
+                scores_detail: mergeScoreDetails(article.scores_detail, {
                     last_publish_error: null,
-                    last_publish_attempt_at: new Date().toISOString(),
+                    last_publish_attempt_at: now,
                     last_published_channel: channel || 'instagram'
                 })
             })
-            .eq('id', id);
+            .eq('id', id)
+            .eq('status', 'publishing')
+            .select('status')
+            .maybeSingle();
 
-        if (error) throw error;
-        res.json({ success: true });
+        if (updateError) throw updateError;
+
+        if (!updated) {
+            // Status changed between our read and update (race). Re-read and handle.
+            const { data: reread } = await supabase
+                .from('articles')
+                .select('status, published_channels')
+                .eq('id', id)
+                .maybeSingle();
+
+            if (reread?.status === 'published') {
+                logger.info({ articleId: id, action: 'mark_published', outcome: 'race_already_published' }, 'Concurrent publish detected — idempotent OK');
+                return res.json({ success: true, idempotent: true, published_channels: reread.published_channels || [] });
+            }
+
+            return res.status(409).json({
+                error: 'concurrent_status_change',
+                status: reread?.status || 'unknown'
+            });
+        }
+
+        logger.info({ articleId: id, action: 'mark_published', outcome: 'success', channel: channel || 'instagram' }, 'Article marked published');
+        res.json({ success: true, published_channels: channels });
 
     } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'mark published failed');
         res.status(500).json({ error: e.message });
     }
 });
@@ -758,6 +860,211 @@ app.post('/api/articles/:id/publish-failed', authMiddleware, async (req, res) =>
         if (error) throw error;
         res.json({ success: true, status: 'publish_failed' });
     } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// ═══════════════════════════════════════
+// ПУБЛИКАТОР → МОЗГ: атомарный lease на публикацию
+//
+// Atomicity guarantee: uses UPDATE ... WHERE status='ready' RETURNING *
+// to acquire the lease in a single round-trip. If 0 rows returned, we attempt
+// a second UPDATE for stale-lease reclaim. Never reads status before writing.
+//
+// Responses:
+//   200 { lease_acquired: true, reclaimed?, article, lease_until }
+//   409 { error: 'lease_held', lease_until, ig_container_id }    — active lease
+//   409 { error: 'already_published', published_channels }       — treat as success
+//   409 { error: 'not_ready', status }                           — wrong state
+// ═══════════════════════════════════════
+app.post('/api/articles/:id/acquire-publish-lease', authMiddleware, validate(AcquireLeaseSchema), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const leaseMinutes = Math.min(req.body.lease_minutes ?? PUBLISHING_LEASE_MINUTES, 60);
+        const now = new Date();
+        const leaseUntil = new Date(now.getTime() + leaseMinutes * 60 * 1000).toISOString();
+
+        // Attempt 1: acquire from 'ready' status atomically.
+        // publish_attempt_count increment is done in a second update below
+        // because Supabase JS SDK does not support UPDATE col = col + 1 in the
+        // same chained call as a WHERE filter with RETURNING *.
+        const { data: acquired, error: acquireError } = await supabase
+            .from('articles')
+            .update({
+                status: 'publishing',
+                publish_lease_until: leaseUntil
+            })
+            .eq('id', id)
+            .eq('status', 'ready')
+            .select('*')
+            .maybeSingle();
+
+        if (acquireError) throw acquireError;
+
+        if (acquired) {
+            // Increment publish_attempt_count separately (Supabase JS has no atomic increment on update+where)
+            await supabase
+                .from('articles')
+                .update({ publish_attempt_count: (acquired.publish_attempt_count || 0) + 1 })
+                .eq('id', id);
+
+            const article = { ...acquired, publish_attempt_count: (acquired.publish_attempt_count || 0) + 1 };
+            logger.info({
+                articleId: id,
+                action: 'acquire_publish_lease',
+                outcome: 'acquired',
+                leaseUntil,
+                attemptCount: article.publish_attempt_count
+            }, 'Publish lease acquired from ready');
+
+            return res.json({
+                lease_acquired: true,
+                reclaimed: false,
+                lease_until: leaseUntil,
+                article
+            });
+        }
+
+        // Attempt 1 returned 0 rows — article is not 'ready'. Check current state.
+        const { data: current, error: readError } = await supabase
+            .from('articles')
+            .select('id, status, publish_lease_until, publish_attempt_count, published_channels, ig_container_id')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (readError) throw readError;
+        if (!current) return res.status(404).json({ error: 'Article not found' });
+
+        // Idempotent: already published — Publisher should treat this as success
+        if (current.status === 'published') {
+            logger.info({ articleId: id, action: 'acquire_publish_lease', outcome: 'already_published' }, 'Article already published');
+            return res.status(409).json({
+                error: 'already_published',
+                status: 'published',
+                published_channels: current.published_channels || []
+            });
+        }
+
+        // Stale lease reclaim: status='publishing' and lease expired
+        if (current.status === 'publishing') {
+            const leaseExpired = !current.publish_lease_until
+                || new Date(current.publish_lease_until) < now;
+
+            if (leaseExpired) {
+                // Attempt 2: reclaim the stale lease atomically
+                const { data: reclaimed, error: reclaimError } = await supabase
+                    .from('articles')
+                    .update({
+                        publish_lease_until: leaseUntil,
+                        publish_attempt_count: (current.publish_attempt_count || 0) + 1
+                    })
+                    .eq('id', id)
+                    .eq('status', 'publishing')
+                    .lt('publish_lease_until', now.toISOString())
+                    .select('*')
+                    .maybeSingle();
+
+                if (reclaimError) throw reclaimError;
+
+                if (reclaimed) {
+                    logger.info({
+                        articleId: id,
+                        action: 'acquire_publish_lease',
+                        outcome: 'reclaimed',
+                        leaseUntil,
+                        attemptCount: reclaimed.publish_attempt_count,
+                        igContainerId: reclaimed.ig_container_id || null
+                    }, 'Stale publish lease reclaimed');
+
+                    return res.json({
+                        lease_acquired: true,
+                        reclaimed: true,
+                        lease_until: leaseUntil,
+                        article: reclaimed
+                    });
+                }
+
+                // Between our read and reclaim another worker grabbed it — fall through to lease_held
+            }
+
+            // Active lease held by another worker (or reclaim race)
+            logger.info({
+                articleId: id,
+                action: 'acquire_publish_lease',
+                outcome: 'lease_held',
+                leaseUntil: current.publish_lease_until
+            }, 'Publish lease held by another worker');
+
+            return res.status(409).json({
+                error: 'lease_held',
+                status: 'publishing',
+                lease_until: current.publish_lease_until,
+                ig_container_id: current.ig_container_id || null
+            });
+        }
+
+        // Any other status (raw, classified, processing, rejected, publish_failed)
+        logger.info({ articleId: id, action: 'acquire_publish_lease', outcome: 'not_ready', status: current.status }, 'Article not in publishable state');
+        return res.status(409).json({
+            error: 'not_ready',
+            status: current.status
+        });
+
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'acquire-publish-lease failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// ═══════════════════════════════════════
+// ПУБЛИКАТОР → МОЗГ: сохранить IG container ID
+//
+// Called immediately after the Instagram container is created (step 1 of 2).
+// Storing it here means that if Publisher crashes before calling /published,
+// a retry can reclaim the lease and use the existing container instead of
+// creating a duplicate — preventing duplicate IG posts.
+//
+// Only succeeds if article.status === 'publishing' (lease must be held).
+// ═══════════════════════════════════════
+app.post('/api/articles/:id/save-ig-container', authMiddleware, validate(SaveIgContainerSchema), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { ig_container_id } = req.body;
+
+        const { data: updated, error } = await supabase
+            .from('articles')
+            .update({ ig_container_id })
+            .eq('id', id)
+            .eq('status', 'publishing')
+            .select('id, status, ig_container_id')
+            .maybeSingle();
+
+        if (error) throw error;
+
+        if (!updated) {
+            const { data: current } = await supabase
+                .from('articles')
+                .select('status')
+                .eq('id', id)
+                .maybeSingle();
+
+            if (!current) return res.status(404).json({ error: 'Article not found' });
+
+            logger.warn({ articleId: id, action: 'save_ig_container', outcome: 'wrong_status', status: current.status }, 'Cannot save IG container — article not in publishing status');
+            return res.status(409).json({
+                error: 'not_publishing',
+                status: current.status,
+                message: `Article must be in 'publishing' status to save container. Current: '${current.status}'`
+            });
+        }
+
+        logger.info({ articleId: id, action: 'save_ig_container', outcome: 'saved', igContainerId: ig_container_id }, 'IG container ID saved');
+        res.json({ success: true, ig_container_id, article_id: id });
+
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'save-ig-container failed');
         res.status(500).json({ error: e.message });
     }
 });
