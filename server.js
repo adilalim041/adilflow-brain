@@ -1747,6 +1747,109 @@ app.post('/api/articles/:id/reject', authMiddleware, async (req, res) => {
     }
 });
 
+// Allowed manual status transitions (Dashboard-triggered).
+// Terminal 'published' is intentionally forbidden as a source to avoid
+// duplicate-publish risk. Landing in 'publishing' via this endpoint is
+// forbidden because it bypasses the atomic lease acquisition.
+const ARTICLE_STATUSES = new Set([
+    'raw', 'classified', 'processing', 'ready',
+    'publishing', 'published', 'rejected', 'publish_failed'
+]);
+const MANUAL_STATUS_TRANSITIONS = {
+    raw:            new Set(['classified', 'rejected']),
+    classified:     new Set(['ready', 'rejected', 'raw']),
+    processing:     new Set(['raw', 'classified', 'rejected']),
+    rejected:       new Set(['raw', 'classified']),
+    ready:          new Set(['classified', 'rejected']),
+    publishing:     new Set(['ready', 'publish_failed']),
+    publish_failed: new Set(['ready', 'classified', 'rejected']),
+    published:      new Set()
+};
+
+// Manually move an article between pipeline statuses
+app.post('/api/articles/:id/move-status', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const targetStatus = req.body?.target_status;
+
+        if (!ARTICLE_STATUSES.has(targetStatus)) {
+            return res.status(400).json({ error: 'invalid_target_status' });
+        }
+
+        const { data: current, error: loadError } = await supabase
+            .from('articles')
+            .select('id, status, ig_container_id, publish_lease_until, published_at')
+            .eq('id', id)
+            .maybeSingle();
+
+        if (loadError) throw loadError;
+        if (!current) return res.status(404).json({ error: 'Article not found' });
+
+        if (current.status === targetStatus) {
+            return res.json({ success: true, article_id: id, status: targetStatus, noop: true });
+        }
+
+        const allowed = MANUAL_STATUS_TRANSITIONS[current.status] || new Set();
+        if (!allowed.has(targetStatus)) {
+            return res.status(409).json({
+                error: 'forbidden_transition',
+                from: current.status,
+                to: targetStatus
+            });
+        }
+
+        // Build patch. Leaving 'publishing' must release the lease so Publisher
+        // won't think a worker still owns the row.
+        const patch = { status: targetStatus };
+        if (current.status === 'publishing' && targetStatus !== 'publishing') {
+            patch.ig_container_id = null;
+            patch.publish_lease_until = null;
+        }
+        // Going back to raw means throwing out prior AI work so the next run is clean.
+        if (targetStatus === 'raw') {
+            patch.relevance_score = null;
+            patch.scores_detail = null;
+            patch.classification_reason = null;
+            patch.classified_at = null;
+            patch.generation_angle = null;
+            patch.final_headline = null;
+            patch.final_caption = null;
+            patch.final_hashtags = null;
+            patch.headline = null;
+            patch.headline2 = null;
+            patch.body = null;
+            patch.conclusion = null;
+            patch.cover_image = null;
+            patch.card_image = null;
+            patch.generated_image = null;
+            patch.image_prompt = null;
+            patch.template_id = null;
+            patch.generated_at = null;
+        }
+
+        // Atomic update guards against concurrent status change between our read and write.
+        const { data: updated, error: updateError } = await supabase
+            .from('articles')
+            .update(patch)
+            .eq('id', id)
+            .eq('status', current.status)
+            .select('id, status')
+            .maybeSingle();
+
+        if (updateError) throw updateError;
+        if (!updated) {
+            return res.status(409).json({ error: 'status_changed_concurrently' });
+        }
+
+        logger.info({ articleId: id, from: current.status, to: targetStatus }, 'Article status manually moved');
+        res.json({ success: true, article_id: id, from: current.status, to: targetStatus });
+
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'move-status failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Requeue an article back to classified status for re-generation
 app.post('/api/articles/:id/requeue', authMiddleware, async (req, res) => {
     try {
@@ -1793,6 +1896,73 @@ app.post('/api/articles/:id/requeue', authMiddleware, async (req, res) => {
     }
 });
 
+
+// Test-run Generator against a single article (Dashboard-triggered).
+app.post('/api/articles/:id/test-generate', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!GENERATOR_URL) return res.status(503).json({ error: 'GENERATOR_URL not configured' });
+
+        const { data: current, error: loadError } = await supabase
+            .from('articles')
+            .select('id, status, niche')
+            .eq('id', id)
+            .maybeSingle();
+        if (loadError) throw loadError;
+        if (!current) return res.status(404).json({ error: 'Article not found' });
+
+        const r = await fetch(`${GENERATOR_URL}/api/generate-one`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${GENERATOR_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ article_id: Number(id) }),
+            signal: AbortSignal.timeout(120000)
+        });
+
+        const body = await r.json().catch(() => ({}));
+        logger.info({ articleId: id, status: r.status }, 'test-generate triggered');
+        return res.status(r.status).json(body);
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'test-generate failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Test-run Publisher against a single article (Dashboard-triggered).
+app.post('/api/articles/:id/test-publish', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const dryRun = req.body?.dry_run === true;
+        if (!PUBLISHER_URL) return res.status(503).json({ error: 'PUBLISHER_URL not configured' });
+
+        const { data: current, error: loadError } = await supabase
+            .from('articles')
+            .select('id, status, niche, cover_image')
+            .eq('id', id)
+            .maybeSingle();
+        if (loadError) throw loadError;
+        if (!current) return res.status(404).json({ error: 'Article not found' });
+
+        const r = await fetch(`${PUBLISHER_URL}/api/publish-one`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${PUBLISHER_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ article_id: Number(id), dry_run: dryRun }),
+            signal: AbortSignal.timeout(120000)
+        });
+
+        const body = await r.json().catch(() => ({}));
+        logger.info({ articleId: id, status: r.status, dryRun }, 'test-publish triggered');
+        return res.status(r.status).json(body);
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'test-publish failed');
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // ═══════════════════════════════════════
 // ДАШБОРД: browse articles (read-only)
