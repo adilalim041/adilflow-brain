@@ -227,6 +227,80 @@ const CheckSimilaritySchema = z.object({
     threshold: z.number().min(0.5).max(0.99).default(0.92)
 });
 
+// ─── Generation events validation ──────────────────────────────────────────
+// Used by POST /api/generation-events (called by Generator to log every
+// AI call it makes) and by the internal classify logger below.
+const GenerationEventSchema = z.object({
+    article_id:  z.number().int().positive(),
+    kind:        z.enum(['classify', 'copy', 'image_prompt', 'caption_regen']),
+    provider:    z.string().min(1).max(50),
+    model:       z.string().max(100).optional(),
+    prompt:      z.record(z.any()),          // { system, user } or { prompt, angle, temperature }
+    response:    z.record(z.any()).nullable().optional(),
+    outcome:     z.enum(['ok', 'error', 'fallback']),
+    error:       z.string().max(2000).optional(),
+    latency_ms:  z.number().int().min(0).max(300_000).optional()
+});
+
+// ─── Playbook validation ────────────────────────────────────────────────────
+// Whitelist of allowed template variables: only {{title}}, {{summary}}, {{text}}.
+// Any other {{...}} pattern in user_prompt_template is rejected with 400.
+const ALLOWED_TEMPLATE_VARS = new Set(['title', 'summary', 'text',
+    // legacy aliases used in existing playbooks
+    'raw_title', 'raw_summary', 'raw_text']);
+const TEMPLATE_VAR_RE = /\{\{(\w+)\}\}/g;
+
+function validateTemplateVars(template) {
+    if (!template) return null; // null = no template provided, skip check
+    const forbidden = [];
+    let m;
+    // Reset lastIndex before reuse (global regex)
+    TEMPLATE_VAR_RE.lastIndex = 0;
+    while ((m = TEMPLATE_VAR_RE.exec(template)) !== null) {
+        if (!ALLOWED_TEMPLATE_VARS.has(m[1])) {
+            forbidden.push(m[0]);
+        }
+    }
+    return forbidden.length > 0 ? forbidden : null;
+}
+
+const PlaybookSchema = z.object({
+    key:                    z.string().min(1).max(200),
+    niche:                  z.string().min(1).max(100),
+    channel_profile_id:     z.string().uuid().nullable().optional(),
+    platform:               z.string().max(50).optional(),
+    format:                 z.string().max(50).optional(),
+    language:               z.string().max(10).optional(),
+    headline_rules:         z.array(z.string().max(500)).max(20).optional(),
+    subheadline_rules:      z.array(z.string().max(500)).max(20).optional(),
+    caption_rules:          z.array(z.string().max(500)).max(20).optional(),
+    image_rules:            z.array(z.string().max(500)).max(20).optional(),
+    image_prompt_template:  z.string().max(4000).optional(),
+    examples:               z.array(z.any()).max(10).optional(),
+    system_prompt:          z.string().min(10).max(8000).nullable().optional(),
+    image_system_prompt:    z.string().max(4000).nullable().optional(),
+    user_prompt_template:   z.string().max(12000).nullable().optional(),
+    is_active:              z.boolean().optional(),
+    name:                   z.string().min(1).max(200).optional()
+}).passthrough();
+
+// Best-effort audit log: writes to playbook_audit table.
+// Never throws — a failed audit write must not block the main response.
+async function writePlaybookAudit(playbookKey, action, oldValue, newValue) {
+    try {
+        await supabase.from('playbook_audit').insert({
+            playbook_id: playbookKey,
+            action,
+            old_value:   oldValue  ? JSON.parse(JSON.stringify(oldValue))  : null,
+            new_value:   JSON.parse(JSON.stringify(newValue)),
+            created_at:  new Date().toISOString()
+        });
+    } catch (auditErr) {
+        // Pre-migration grace: table may not exist yet — log warn, don't crash
+        logger.warn({ err: auditErr.message, playbook_id: playbookKey, action }, 'playbook_audit write failed (non-fatal)');
+    }
+}
+
 const app = express();
 app.set('trust proxy', 1);
 
@@ -253,6 +327,8 @@ app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/health'
 app.use('/api/', rateLimit({ windowMs: 60_000, max: 300, message: { error: 'Too many requests' } }));
 app.use('/api/articles/batch', rateLimit({ windowMs: 60_000, max: 100 }));
 app.use('/api/classify', rateLimit({ windowMs: 60_000, max: 30 }));
+// generation-events is called per-article during batch generation — allow high throughput
+app.use('/api/generation-events', rateLimit({ windowMs: 60_000, max: 500, message: { error: 'Too many requests' } }));
 const PROCESSING_LEASE_MINUTES = parseInt(process.env.PROCESSING_LEASE_MINUTES || '30', 10);
 const PUBLISHING_LEASE_MINUTES = parseInt(process.env.PUBLISHING_LEASE_MINUTES || '30', 10);
 
@@ -720,7 +796,7 @@ async function classifyWithGPT(article, nicheConfig) {
 Consider: is it a real news/discovery (not an ad or opinion piece)? Is it recent? Is it interesting for a general audience?
 
 Title: ${article.raw_title}
-Summary: ${(article.raw_summary || article.raw_text.slice(0, 500))}
+Summary: ${(article.raw_summary || (article.raw_text ?? '').slice(0, 500))}
 
 Respond with ONLY a number 1-10. Nothing else.`;
 
@@ -758,10 +834,39 @@ Respond with ONLY a number 1-10. Nothing else.`;
 
         const text = data.choices?.[0]?.message?.content?.trim() || '5';
         const score = parseFloat(text);
-        logger.info({ provider: 'openai', latencyMs: Date.now() - start, articleId: article.id, score }, 'GPT classification ok');
+        const latencyMs = Date.now() - start;
+        logger.info({ provider: 'openai', latencyMs, articleId: article.id, score }, 'GPT classification ok');
+
+        // Fire-and-forget audit event
+        supabase.from('generation_events').insert({
+            article_id: article.id,
+            kind: 'classify',
+            provider: 'openai',
+            model: 'gpt-4o-mini',
+            prompt: { system: null, user: prompt },
+            response: { score, raw_text: text },
+            outcome: 'ok',
+            latency_ms: latencyMs
+        }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'classify event log failed'));
+
         return isNaN(score) ? 5 : Math.min(10, Math.max(1, score));
     } catch (e) {
-        logger.error({ provider: 'openai', latencyMs: Date.now() - start, articleId: article.id, error: e.message }, 'GPT classification failed, using default score');
+        const latencyMs = Date.now() - start;
+        logger.error({ provider: 'openai', latencyMs, articleId: article.id, error: e.message }, 'GPT classification failed, using default score');
+
+        // Fire-and-forget audit event (error path)
+        supabase.from('generation_events').insert({
+            article_id: article.id,
+            kind: 'classify',
+            provider: 'openai',
+            model: 'gpt-4o-mini',
+            prompt: { system: null, user: prompt },
+            response: null,
+            outcome: 'error',
+            error: String(e.message).slice(0, 2000),
+            latency_ms: latencyMs
+        }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'classify error event log failed'));
+
         return 5;
     }
 }
@@ -1341,6 +1446,217 @@ app.post('/api/captions/check-similarity', authMiddleware, validate(CheckSimilar
 
 
 // ═══════════════════════════════════════
+// GENERATION EVENTS
+// Generator (and Brain itself for classify) posts here to audit every AI call.
+// Dashboard Workflow page reads these events to show "what was sent, what came back".
+// ═══════════════════════════════════════
+app.post('/api/generation-events', authMiddleware, validate(GenerationEventSchema), async (req, res) => {
+    try {
+        const body = req.body;
+        const { data, error } = await supabase
+            .from('generation_events')
+            .insert({
+                article_id: body.article_id,
+                kind:       body.kind,
+                provider:   body.provider,
+                model:      body.model ?? null,
+                prompt:     body.prompt,
+                response:   body.response ?? null,
+                outcome:    body.outcome,
+                error:      body.error ?? null,
+                latency_ms: body.latency_ms ?? null
+            })
+            .select('id')
+            .single();
+
+        if (error) throw error;
+        res.json({ id: data.id });
+    } catch (e) {
+        logger.error({ err: e, action: 'generation_event_insert' }, 'generation-events insert failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// ═══════════════════════════════════════
+// WORKFLOW AGGREGATOR
+// One-shot endpoint used by Dashboard Workflow page. Combines:
+//   - Parser: source feeds for the niche (live fetch from Parser service)
+//   - Brain:  article status counts + recent items + generation_events timeline
+//   - Publisher: last published + last failures (Brain DB is enough)
+// Failures of subservice fetches degrade gracefully (null / empty arrays).
+// ═══════════════════════════════════════
+app.get('/api/workflow/:niche', authMiddleware, async (req, res) => {
+    const niche = req.params.niche;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '30', 10)));
+
+    try {
+        // ── Parser sources (optional — Parser may be down) ───────────────
+        let parserSources = null;
+        try {
+            if (PARSER_URL) {
+                const r = await fetch(`${PARSER_URL}/api/sources`, {
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (r.ok) {
+                    const j = await r.json();
+                    parserSources = j?.niches?.[niche] || null;
+                }
+            }
+        } catch (e) {
+            logger.warn({ err: e.message, niche }, 'Parser /api/sources fetch failed');
+        }
+
+        // ── Supabase queries in parallel ──────────────────────────────────
+        const [
+            { data: articlesRows, error: artErr },
+            { data: rawRows },
+            { count: countRaw },
+            { count: countClassified },
+            { count: countReady },
+            { count: countPublishing },
+            { count: countPublished },
+            { count: countRejected },
+            { count: countFailed },
+            { count: count24h },
+            { count: totalPublishedGlobal },
+            { count: withEmbedding },
+            { data: failuresRows }
+        ] = await Promise.all([
+            supabase.from('articles').select('*')
+                .eq('niche', niche)
+                .not('status', 'eq', 'raw')
+                .order('created_at', { ascending: false }).limit(limit),
+            supabase.from('articles').select('id,raw_title,raw_url,raw_source_url,raw_image_url,status,created_at')
+                .eq('niche', niche).eq('status', 'raw')
+                .order('created_at', { ascending: false }).limit(20),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'raw'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'classified'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'ready'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'publishing'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'published'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'rejected'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'publish_failed'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).gte('created_at', new Date(Date.now() - 24*60*60*1000).toISOString()),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('status', 'published'),
+            supabase.from('articles').select('*', { count: 'exact', head: true }).eq('status', 'published').not('caption_embedding', 'is', null),
+            supabase.from('articles').select('id,final_headline,raw_title,updated_at,publish_error,ig_post_id')
+                .eq('niche', niche).eq('status', 'publish_failed')
+                .order('updated_at', { ascending: false }).limit(5)
+        ]);
+
+        if (artErr) throw artErr;
+
+        // ── Generation events for listed articles ────────────────────────
+        const articleIds = (articlesRows || []).map(a => a.id);
+        let eventsByArticle = {};
+        if (articleIds.length > 0) {
+            const { data: eventsRows } = await supabase.from('generation_events')
+                .select('id,article_id,kind,provider,model,prompt,response,outcome,error,latency_ms,created_at')
+                .in('article_id', articleIds)
+                .order('created_at', { ascending: true });
+            for (const ev of (eventsRows || [])) {
+                if (!eventsByArticle[ev.article_id]) eventsByArticle[ev.article_id] = [];
+                eventsByArticle[ev.article_id].push(ev);
+            }
+        }
+
+        const articles = (articlesRows || []).map(a => ({
+            id: a.id,
+            title: a.final_headline || a.raw_title,
+            raw_title: a.raw_title,
+            url: a.raw_url,
+            source: a.raw_source_url,
+            image_url: a.raw_image_url,
+            status: a.status,
+            relevance_score: a.relevance_score,
+            classification_reason: a.classification_reason,
+            headline_ru: a.final_headline,
+            caption_ru: a.final_caption,
+            hashtags: a.final_hashtags,
+            angle: a.generation_angle,
+            cover_image: a.cover_image,
+            ig_container_id: a.ig_container_id,
+            ig_post_id: a.ig_post_id,
+            published_at: a.published_at,
+            publish_lease_until: a.publish_lease_until,
+            publish_error: a.publish_error,
+            created_at: a.created_at,
+            generation_events: eventsByArticle[a.id] || []
+        }));
+
+        const lastPublished = articles
+            .filter(a => a.status === 'published')
+            .slice(0, 5)
+            .map(a => ({
+                id: a.id,
+                headline_ru: a.headline_ru,
+                ig_post_id: a.ig_post_id,
+                permalink: a.ig_post_id ? `https://www.instagram.com/p/${a.ig_post_id}` : null,
+                published_at: a.published_at
+            }));
+
+        const tp = totalPublishedGlobal || 0;
+        const we = withEmbedding || 0;
+
+        res.json({
+            niche,
+            parser: {
+                sources: parserSources?.feeds || [],
+                feeds_count: parserSources?.feeds_count || 0,
+                language: parserSources?.language || null,
+                articles_24h: count24h || 0,
+                recent_raw: (rawRows || []).map(r => ({
+                    id: r.id,
+                    title: r.raw_title,
+                    source: r.raw_source_url,
+                    url: r.raw_url,
+                    image_url: r.raw_image_url,
+                    pulled_at: r.created_at,
+                    status: r.status
+                }))
+            },
+            brain: {
+                stats: {
+                    raw: countRaw || 0,
+                    classified: countClassified || 0,
+                    ready: countReady || 0,
+                    publishing: countPublishing || 0,
+                    published: countPublished || 0,
+                    rejected: countRejected || 0,
+                    publish_failed: countFailed || 0
+                },
+                scheduler: {
+                    enabled: SCHEDULER_ENABLED,
+                    last_runs: schedulerLog.slice(-10).reverse()
+                },
+                caption_embedding_coverage: {
+                    total_published: tp,
+                    with_embedding: we,
+                    pct: tp > 0 ? Math.round((we / tp) * 100) : 0
+                }
+            },
+            articles,
+            publisher: {
+                quota_usage_pct: null,
+                last_published: lastPublished,
+                last_failures: (failuresRows || []).map(f => ({
+                    id: f.id,
+                    headline_ru: f.final_headline || f.raw_title,
+                    failed_at: f.updated_at,
+                    reason: f.publish_error,
+                    ig_post_id: f.ig_post_id
+                }))
+            }
+        });
+    } catch (e) {
+        logger.error({ err: e, niche }, 'workflow aggregator failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// ═══════════════════════════════════════
 // ДАШБОРД: article actions
 // ═══════════════════════════════════════
 
@@ -1764,28 +2080,59 @@ app.get('/api/playbooks', authMiddleware, async (req, res) => {
 
 app.post('/api/playbooks', authMiddleware, async (req, res) => {
     try {
+        // ── Zod validation ────────────────────────────────────────────────
+        const parsed = PlaybookSchema.safeParse(req.body || {});
+        if (!parsed.success) {
+            return res.status(400).json({
+                error: 'Invalid playbook payload',
+                details: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`)
+            });
+        }
+        const body = parsed.data;
+
+        // ── Template variable whitelist ───────────────────────────────────
+        if (body.user_prompt_template) {
+            const forbidden = validateTemplateVars(body.user_prompt_template);
+            if (forbidden) {
+                return res.status(400).json({
+                    error: 'user_prompt_template contains forbidden template variables',
+                    forbidden,
+                    allowed: Array.from(ALLOWED_TEMPLATE_VARS)
+                });
+            }
+        }
+
         const payload = {
-            key: req.body?.key,
-            channel_profile_id: req.body?.channel_profile_id || null,
-            niche: req.body?.niche,
-            platform: req.body?.platform || 'instagram',
-            format: req.body?.format || 'feed_post',
-            language: req.body?.language || 'ru',
-            headline_rules: req.body?.headline_rules || [],
-            subheadline_rules: req.body?.subheadline_rules || [],
-            caption_rules: req.body?.caption_rules || [],
-            image_rules: req.body?.image_rules || [],
-            image_prompt_template: req.body?.image_prompt_template || '',
-            examples: req.body?.examples || [],
-            system_prompt: req.body?.system_prompt || null,
-            image_system_prompt: req.body?.image_system_prompt || null,
-            user_prompt_template: req.body?.user_prompt_template || null,
-            is_active: req.body?.is_active !== false
+            key:                    body.key,
+            channel_profile_id:     body.channel_profile_id ?? null,
+            niche:                  body.niche,
+            platform:               body.platform               ?? 'instagram',
+            format:                 body.format                 ?? 'feed_post',
+            language:               body.language               ?? 'ru',
+            headline_rules:         body.headline_rules         ?? [],
+            subheadline_rules:      body.subheadline_rules      ?? [],
+            caption_rules:          body.caption_rules          ?? [],
+            image_rules:            body.image_rules            ?? [],
+            image_prompt_template:  body.image_prompt_template  ?? '',
+            examples:               body.examples               ?? [],
+            system_prompt:          body.system_prompt          ?? null,
+            image_system_prompt:    body.image_system_prompt    ?? null,
+            user_prompt_template:   body.user_prompt_template   ?? null,
+            is_active:              body.is_active              !== false
         };
 
-        if (!payload.key || !payload.niche) {
-            return res.status(400).json({ error: 'key and niche are required' });
-        }
+        // ── Fetch existing record for audit (best-effort) ─────────────────
+        let oldRecord = null;
+        try {
+            const { data: existing } = await supabase
+                .from('content_playbooks')
+                .select('*')
+                .eq('key', payload.key)
+                .maybeSingle();
+            oldRecord = existing ?? null;
+        } catch { /* non-fatal */ }
+
+        const action = oldRecord ? 'update' : 'create';
 
         const { data, error } = await supabase
             .from('content_playbooks')
@@ -1797,6 +2144,9 @@ app.post('/api/playbooks', authMiddleware, async (req, res) => {
             if (isMissingTableError(error)) return optionalTableResponse(res, 'content_playbooks');
             throw error;
         }
+
+        // ── Audit log (fire-and-forget, non-blocking) ─────────────────────
+        writePlaybookAudit(payload.key, action, oldRecord, data).catch(() => {});
 
         res.json({ success: true, playbook: mapPlaybookRecord(data) });
     } catch (e) {
@@ -1955,6 +2305,7 @@ app.get('/api/config/resolve', authMiddleware, async (req, res) => {
 const SCHEDULER_ENABLED = process.env.SCHEDULER_ENABLED === 'true';
 const GENERATOR_URL = process.env.GENERATOR_URL || '';
 const PUBLISHER_URL = process.env.PUBLISHER_URL || '';
+const PARSER_URL = process.env.PARSER_URL || '';
 const GENERATOR_API_KEY = process.env.GENERATOR_API_KEY || '';
 const PUBLISHER_API_KEY = process.env.PUBLISHER_API_KEY || '';
 const SCHEDULE_CLASSIFY_MINUTES = parseInt(process.env.SCHEDULE_CLASSIFY_MINUTES || '30', 10);
