@@ -1527,7 +1527,7 @@ app.get('/api/workflow/:niche', authMiddleware, async (req, res) => {
                 .eq('niche', niche)
                 .not('status', 'eq', 'raw')
                 .order('created_at', { ascending: false }).limit(limit),
-            supabase.from('articles').select('id,raw_title,raw_url,raw_source_url,raw_image_url,status,created_at')
+            supabase.from('articles').select('id,raw_title,url,source_name,source_domain,top_image,status,created_at,parsed_at,published_at')
                 .eq('niche', niche).eq('status', 'raw')
                 .order('created_at', { ascending: false }).limit(20),
             supabase.from('articles').select('*', { count: 'exact', head: true }).eq('niche', niche).eq('status', 'raw'),
@@ -1565,9 +1565,9 @@ app.get('/api/workflow/:niche', authMiddleware, async (req, res) => {
             id: a.id,
             title: a.final_headline || a.raw_title,
             raw_title: a.raw_title,
-            url: a.raw_url,
-            source: a.raw_source_url,
-            image_url: a.raw_image_url,
+            url: a.url,
+            source: a.source_name || a.source_domain,
+            image_url: a.top_image,
             status: a.status,
             relevance_score: a.relevance_score,
             classification_reason: a.classification_reason,
@@ -1609,10 +1609,12 @@ app.get('/api/workflow/:niche', authMiddleware, async (req, res) => {
                 recent_raw: (rawRows || []).map(r => ({
                     id: r.id,
                     title: r.raw_title,
-                    source: r.raw_source_url,
-                    url: r.raw_url,
-                    image_url: r.raw_image_url,
+                    source: r.source_name || r.source_domain,
+                    url: r.url,
+                    image_url: r.top_image,
                     pulled_at: r.created_at,
+                    parsed_at: r.parsed_at,
+                    published_at: r.published_at,
                     status: r.status
                 }))
             },
