@@ -8,6 +8,8 @@
 
 require('dotenv').config();
 
+const { startHeartbeat } = require('./lib/heartbeat');
+
 // ═══════════════════════════════════════
 // FAIL-CLOSED: abort immediately if API_KEY is not set.
 // An unprotected Brain endpoint can destroy production data.
@@ -2635,6 +2637,7 @@ esmReady.then(() => {
         logger.info(`AdilFlow Brain listening on port ${PORT}`);
         logger.info(`Supabase: ${process.env.SUPABASE_URL ? 'connected' : 'NOT SET'}`);
         startScheduler();
+        startHeartbeat(supabase, logger);
     });
 }).catch((err) => {
     logger.fatal({ error: err.message }, 'Failed to load ESM dependencies');
