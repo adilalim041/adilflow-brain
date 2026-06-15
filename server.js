@@ -19,6 +19,12 @@ if (!process.env.API_KEY) {
     _startupLogger.fatal('API_KEY environment variable is not set. Refusing to start.');
     process.exit(1);
 }
+const _requiredStartup = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
+const _missingStartup = _requiredStartup.filter((key) => !process.env[key]);
+if (_missingStartup.length > 0) {
+    _startupLogger.fatal({ missing: _missingStartup }, 'Missing required env vars. Refusing to start.');
+    process.exit(1);
+}
 
 const Sentry = require('@sentry/node');
 if (process.env.SENTRY_DSN) {
@@ -377,6 +383,41 @@ function toBool(value, fallback = false) {
     return fallback;
 }
 
+function classifySupabaseError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    const status = Number(error?.status || error?.code || 0);
+    if (message.includes('invalid api key') || status === 401 || status === 403) {
+        return 'invalid_supabase_key';
+    }
+    if (message.includes('could not find') || message.includes('does not exist')) {
+        return 'schema_missing';
+    }
+    return 'supabase_unavailable';
+}
+
+async function checkSupabaseConnection() {
+    try {
+        const { error } = await supabase
+            .from('niches')
+            .select('id', { count: 'exact', head: true })
+            .limit(1);
+        if (error) {
+            return {
+                ok: false,
+                error_type: classifySupabaseError(error),
+                status: error.status || null
+            };
+        }
+        return { ok: true };
+    } catch (error) {
+        return {
+            ok: false,
+            error_type: classifySupabaseError(error),
+            status: error.status || null
+        };
+    }
+}
+
 function isMissingTableError(error) {
     const message = String(error?.message || '').toLowerCase();
     return error?.code === '42P01'
@@ -620,6 +661,20 @@ app.get('/health', async (req, res) => {
     } catch (e) {
         res.status(500).json({ status: 'error', message: e.message });
     }
+});
+
+app.get('/api/config-check', authMiddleware, async (req, res) => {
+    const supabaseCheck = await checkSupabaseConnection();
+    res.status(supabaseCheck.ok ? 200 : 503).json({
+        success: supabaseCheck.ok,
+        configured: {
+            api_key: true,
+            supabase_url: !!process.env.SUPABASE_URL,
+            supabase_service_key: !!process.env.SUPABASE_SERVICE_KEY,
+            openai_api_key: !!process.env.OPENAI_API_KEY
+        },
+        supabase: supabaseCheck
+    });
 });
 
 // ═══════════════════════════════════════
