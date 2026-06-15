@@ -347,8 +347,9 @@ const supabase = createClient(
 // AUTH MIDDLEWARE
 // ═══════════════════════════════════════
 function authMiddleware(req, res, next) {
-    const key = req.headers.authorization?.replace('Bearer ', '');
-    if (!key || key !== process.env.API_KEY) {
+    const key = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    const expected = String(process.env.API_KEY || '').trim();
+    if (!key || key !== expected) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
     next();
