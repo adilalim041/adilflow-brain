@@ -333,6 +333,7 @@ app.use('/api/classify', rateLimit({ windowMs: 60_000, max: 30 }));
 app.use('/api/generation-events', rateLimit({ windowMs: 60_000, max: 500, message: { error: 'Too many requests' } }));
 const PROCESSING_LEASE_MINUTES = parseInt(process.env.PROCESSING_LEASE_MINUTES || '30', 10);
 const PUBLISHING_LEASE_MINUTES = parseInt(process.env.PUBLISHING_LEASE_MINUTES || '30', 10);
+const HEALTH_DB_CHECK_ENABLED = process.env.HEALTH_DB_CHECK_ENABLED === 'true';
 
 // ═══════════════════════════════════════
 // SUPABASE
@@ -561,6 +562,16 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', async (req, res) => {
+    if (!HEALTH_DB_CHECK_ENABLED) {
+        return res.json({
+            status: 'ok',
+            db_check: 'disabled',
+            breakers: {
+                'openai-classify': openaiBreaker.getStatus()
+            }
+        });
+    }
+
     try {
         const { count } = await supabase.from('articles').select('*', { count: 'exact', head: true });
 
@@ -598,6 +609,7 @@ app.get('/health', async (req, res) => {
 
         res.json({
             status: 'ok',
+            db_check: 'enabled',
             articles: count,
             breakers: {
                 'openai-classify': openaiBreaker.getStatus()
