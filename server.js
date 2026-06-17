@@ -251,11 +251,13 @@ const GenerationEventSchema = z.object({
 });
 
 // ─── Playbook validation ────────────────────────────────────────────────────
-// Whitelist of allowed template variables: only {{title}}, {{summary}}, {{text}}.
+// Whitelist of allowed template variables for Generator user_prompt_template.
 // Any other {{...}} pattern in user_prompt_template is rejected with 400.
 const ALLOWED_TEMPLATE_VARS = new Set(['title', 'summary', 'text',
     // legacy aliases used in existing playbooks
-    'raw_title', 'raw_summary', 'raw_text']);
+    'raw_title', 'raw_summary', 'raw_text',
+    // date context for freshness-sensitive news prompts
+    'published_at', 'parsed_at', 'current_date']);
 const TEMPLATE_VAR_RE = /\{\{(\w+)\}\}/g;
 
 function validateTemplateVars(template) {
