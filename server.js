@@ -1596,7 +1596,7 @@ app.get('/api/workflow/:niche', authMiddleware, async (req, res) => {
             supabase.from('articles').select('*')
                 .eq('niche', niche)
                 .not('status', 'eq', 'raw')
-                .order('created_at', { ascending: false }).limit(limit),
+                .order('updated_at', { ascending: false }).limit(limit),
             supabase.from('articles').select('id,raw_title,url,source_name,source_domain,top_image,status,created_at,parsed_at,published_at')
                 .eq('niche', niche).eq('status', 'raw')
                 .order('created_at', { ascending: false }).limit(20),
@@ -1652,6 +1652,7 @@ app.get('/api/workflow/:niche', authMiddleware, async (req, res) => {
             publish_lease_until: a.publish_lease_until,
             publish_error: a.publish_error,
             created_at: a.created_at,
+            updated_at: a.updated_at,
             generation_events: eventsByArticle[a.id] || []
         }));
 
