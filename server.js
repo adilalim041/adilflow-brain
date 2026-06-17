@@ -294,6 +294,59 @@ const PlaybookSchema = z.object({
     name:                   z.string().min(1).max(200).optional()
 }).passthrough();
 
+const EntitySchema = z.object({
+    slug: z.string().min(1).max(120).regex(/^[a-z0-9][a-z0-9-]*$/),
+    name: z.string().min(1).max(200),
+    entity_type: z.enum(['company', 'person', 'product', 'organization', 'place']),
+    aliases: z.array(z.string().min(1).max(120)).max(50).optional(),
+    parent_entity_slug: z.string().max(120).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    is_active: z.boolean().optional()
+}).passthrough();
+
+const EntityAssetSchema = z.object({
+    entity_slug: z.string().min(1).max(120),
+    asset_type: z.enum([
+        'logo_icon',
+        'logo_wordmark',
+        'person_reference',
+        'person_cutout',
+        'product_photo',
+        'source_photo',
+        'symbol'
+    ]),
+    variant: z.string().min(1).max(80).optional(),
+    display_name: z.string().max(200).nullable().optional(),
+    person_entity_slug: z.string().max(120).nullable().optional(),
+    source_url: z.string().url().nullable().optional(),
+    source_name: z.string().max(200).nullable().optional(),
+    license_note: z.string().max(1000).nullable().optional(),
+    cloudinary_url: z.string().url(),
+    cloudinary_public_id: z.string().max(500).nullable().optional(),
+    cutout_cloudinary_url: z.string().url().nullable().optional(),
+    cutout_cloudinary_public_id: z.string().max(500).nullable().optional(),
+    width: z.number().int().positive().nullable().optional(),
+    height: z.number().int().positive().nullable().optional(),
+    quality_score: z.number().int().min(0).max(100).nullable().optional(),
+    status: z.enum(['needs_review', 'approved', 'rejected', 'archived']).optional(),
+    metadata: z.record(z.any()).optional()
+}).passthrough();
+
+const ImageStylePresetSchema = z.object({
+    slug: z.string().min(1).max(120).regex(/^[a-z0-9][a-z0-9-]*$/),
+    name: z.string().min(1).max(200),
+    category: z.string().min(1).max(80).optional(),
+    prompt_template: z.string().min(20).max(6000),
+    negative_prompt: z.string().max(3000).optional(),
+    use_cases: z.array(z.string().min(1).max(120)).max(30).optional(),
+    requires_entity_assets: z.boolean().optional(),
+    supports_person_reference: z.boolean().optional(),
+    supports_logo_layer: z.boolean().optional(),
+    priority: z.number().int().min(1).max(1000).optional(),
+    is_active: z.boolean().optional(),
+    metadata: z.record(z.any()).optional()
+}).passthrough();
+
 // Best-effort audit log: writes to playbook_audit table.
 // Never throws — a failed audit write must not block the main response.
 async function writePlaybookAudit(playbookKey, action, oldValue, newValue) {
@@ -473,6 +526,67 @@ function mapTemplateBindingRecord(record) {
         priority: record.priority || 100,
         is_active: record.is_active !== false,
         notes: record.notes || null,
+        created_at: record.created_at || null,
+        updated_at: record.updated_at || null
+    };
+}
+
+function mapEntityRecord(record) {
+    if (!record) return null;
+    return {
+        slug: record.slug,
+        name: record.name,
+        entity_type: record.entity_type,
+        aliases: record.aliases || [],
+        parent_entity_slug: record.parent_entity_slug || null,
+        notes: record.notes || null,
+        is_active: record.is_active !== false,
+        created_at: record.created_at || null,
+        updated_at: record.updated_at || null
+    };
+}
+
+function mapEntityAssetRecord(record) {
+    if (!record) return null;
+    return {
+        id: record.id,
+        entity_slug: record.entity_slug,
+        asset_type: record.asset_type,
+        variant: record.variant || 'primary',
+        display_name: record.display_name || null,
+        person_entity_slug: record.person_entity_slug || null,
+        source_url: record.source_url || null,
+        source_name: record.source_name || null,
+        license_note: record.license_note || null,
+        cloudinary_url: record.cloudinary_url,
+        cloudinary_public_id: record.cloudinary_public_id || null,
+        cutout_cloudinary_url: record.cutout_cloudinary_url || null,
+        cutout_cloudinary_public_id: record.cutout_cloudinary_public_id || null,
+        width: record.width || null,
+        height: record.height || null,
+        quality_score: record.quality_score ?? null,
+        status: record.status || 'needs_review',
+        metadata: record.metadata || {},
+        created_at: record.created_at || null,
+        updated_at: record.updated_at || null
+    };
+}
+
+function mapImageStylePresetRecord(record) {
+    if (!record) return null;
+    return {
+        slug: record.slug,
+        name: record.name,
+        category: record.category || 'editorial',
+        prompt_template: record.prompt_template,
+        negative_prompt: record.negative_prompt || '',
+        use_cases: record.use_cases || [],
+        requires_entity_assets: record.requires_entity_assets === true,
+        supports_person_reference: record.supports_person_reference === true,
+        supports_logo_layer: record.supports_logo_layer !== false,
+        priority: record.priority || 100,
+        is_active: record.is_active !== false,
+        metadata: record.metadata || {},
         created_at: record.created_at || null,
         updated_at: record.updated_at || null
     };
@@ -2458,6 +2572,226 @@ app.post('/api/template-bindings', authMiddleware, async (req, res) => {
         }
 
         res.json({ success: true, binding: mapTemplateBindingRecord(data) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/entities', authMiddleware, async (req, res) => {
+    try {
+        const { entity_type, q, active_only = 'true' } = req.query;
+        let query = supabase
+            .from('entities')
+            .select('*')
+            .order('name', { ascending: true });
+
+        if (entity_type) query = query.eq('entity_type', entity_type);
+        if (toBool(active_only, true)) query = query.eq('is_active', true);
+        if (q) {
+            const needle = String(q).trim().replace(/[%,().]/g, '').slice(0, 80);
+            if (needle) query = query.or(`slug.ilike.%${needle}%,name.ilike.%${needle}%`);
+        }
+
+        const { data, error } = await query;
+        if (error) {
+            if (isMissingTableError(error)) return optionalTableResponse(res, 'entities');
+            throw error;
+        }
+
+        res.json({ success: true, entities: (data || []).map(mapEntityRecord) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/entities', authMiddleware, async (req, res) => {
+    try {
+        const parsed = EntitySchema.safeParse(req.body || {});
+        if (!parsed.success) {
+            const details = parsed.error.errors || parsed.error.issues || [];
+            return res.status(400).json({
+                error: 'Invalid entity payload',
+                details: details.map(e => `${e.path.join('.')}: ${e.message}`)
+            });
+        }
+        const body = parsed.data;
+        const payload = {
+            slug: body.slug,
+            name: body.name,
+            entity_type: body.entity_type,
+            aliases: body.aliases || [],
+            parent_entity_slug: body.parent_entity_slug || null,
+            notes: body.notes || null,
+            is_active: body.is_active !== false
+        };
+
+        const { data, error } = await supabase
+            .from('entities')
+            .upsert(payload, { onConflict: 'slug' })
+            .select('*')
+            .single();
+
+        if (error) {
+            if (isMissingTableError(error)) return optionalTableResponse(res, 'entities');
+            throw error;
+        }
+
+        res.json({ success: true, entity: mapEntityRecord(data) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/entity-assets', authMiddleware, async (req, res) => {
+    try {
+        const {
+            entity_slug,
+            asset_type,
+            status = 'approved',
+            include_review = 'false',
+            prefer_icon_only = 'true'
+        } = req.query;
+
+        let query = supabase
+            .from('entity_assets')
+            .select('*')
+            .order('quality_score', { ascending: false, nullsFirst: false })
+            .order('updated_at', { ascending: false });
+
+        if (entity_slug) query = query.eq('entity_slug', entity_slug);
+        if (asset_type) {
+            query = query.eq('asset_type', asset_type);
+        } else if (toBool(prefer_icon_only, true)) {
+            query = query.neq('asset_type', 'logo_wordmark');
+        }
+        if (toBool(include_review, false)) {
+            query = query.in('status', ['approved', 'needs_review']);
+        } else if (status) {
+            query = query.eq('status', status);
+        }
+
+        const { data, error } = await query;
+        if (error) {
+            if (isMissingTableError(error)) return optionalTableResponse(res, 'entity_assets');
+            throw error;
+        }
+
+        res.json({ success: true, assets: (data || []).map(mapEntityAssetRecord) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/entity-assets', authMiddleware, async (req, res) => {
+    try {
+        const parsed = EntityAssetSchema.safeParse(req.body || {});
+        if (!parsed.success) {
+            const details = parsed.error.errors || parsed.error.issues || [];
+            return res.status(400).json({
+                error: 'Invalid entity asset payload',
+                details: details.map(e => `${e.path.join('.')}: ${e.message}`)
+            });
+        }
+        const body = parsed.data;
+        const payload = {
+            entity_slug: body.entity_slug,
+            asset_type: body.asset_type,
+            variant: body.variant || 'primary',
+            display_name: body.display_name || null,
+            person_entity_slug: body.person_entity_slug || null,
+            source_url: body.source_url || null,
+            source_name: body.source_name || null,
+            license_note: body.license_note || null,
+            cloudinary_url: body.cloudinary_url,
+            cloudinary_public_id: body.cloudinary_public_id || null,
+            cutout_cloudinary_url: body.cutout_cloudinary_url || null,
+            cutout_cloudinary_public_id: body.cutout_cloudinary_public_id || null,
+            width: body.width || null,
+            height: body.height || null,
+            quality_score: body.quality_score ?? null,
+            status: body.status || 'needs_review',
+            metadata: body.metadata || {}
+        };
+
+        const { data, error } = await supabase
+            .from('entity_assets')
+            .upsert(payload, { onConflict: 'entity_slug,asset_type,variant,person_entity_slug' })
+            .select('*')
+            .single();
+
+        if (error) {
+            if (isMissingTableError(error)) return optionalTableResponse(res, 'entity_assets');
+            throw error;
+        }
+
+        res.json({ success: true, asset: mapEntityAssetRecord(data) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/image-style-presets', authMiddleware, async (req, res) => {
+    try {
+        const { category, active_only = 'true' } = req.query;
+        let query = supabase
+            .from('image_style_presets')
+            .select('*')
+            .order('priority', { ascending: true })
+            .order('updated_at', { ascending: false });
+
+        if (category) query = query.eq('category', category);
+        if (toBool(active_only, true)) query = query.eq('is_active', true);
+
+        const { data, error } = await query;
+        if (error) {
+            if (isMissingTableError(error)) return optionalTableResponse(res, 'image_style_presets');
+            throw error;
+        }
+
+        res.json({ success: true, presets: (data || []).map(mapImageStylePresetRecord) });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/image-style-presets', authMiddleware, async (req, res) => {
+    try {
+        const parsed = ImageStylePresetSchema.safeParse(req.body || {});
+        if (!parsed.success) {
+            const details = parsed.error.errors || parsed.error.issues || [];
+            return res.status(400).json({
+                error: 'Invalid image style preset payload',
+                details: details.map(e => `${e.path.join('.')}: ${e.message}`)
+            });
+        }
+        const body = parsed.data;
+        const payload = {
+            slug: body.slug,
+            name: body.name,
+            category: body.category || 'editorial',
+            prompt_template: body.prompt_template,
+            negative_prompt: body.negative_prompt || '',
+            use_cases: body.use_cases || [],
+            requires_entity_assets: body.requires_entity_assets === true,
+            supports_person_reference: body.supports_person_reference === true,
+            supports_logo_layer: body.supports_logo_layer !== false,
+            priority: toInt(body.priority, 100, 1, 1000),
+            is_active: body.is_active !== false,
+            metadata: body.metadata || {}
+        };
+
+        const { data, error } = await supabase
+            .from('image_style_presets')
+            .upsert(payload, { onConflict: 'slug' })
+            .select('*')
+            .single();
+
+        if (error) {
+            if (isMissingTableError(error)) return optionalTableResponse(res, 'image_style_presets');
+            throw error;
+        }
+
+        res.json({ success: true, preset: mapImageStylePresetRecord(data) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

@@ -211,6 +211,94 @@ create index if not exists idx_template_bindings_scope
     on template_bindings(platform, niche, is_active, priority);
 
 
+-- ======================================
+-- TABLE: entities
+-- Reusable brand/person/product records for visual generation
+-- ======================================
+create table if not exists entities (
+    slug                text primary key,
+    name                text not null,
+    entity_type         text not null check (entity_type in ('company', 'person', 'product', 'organization', 'place')),
+    aliases             text[] not null default '{}',
+    parent_entity_slug  text references entities(slug) on delete set null,
+    notes               text,
+    is_active           boolean not null default true,
+    created_at          timestamptz not null default now(),
+    updated_at          timestamptz not null default now()
+);
+
+create index if not exists idx_entities_type_active
+    on entities(entity_type, is_active, name);
+
+-- ======================================
+-- TABLE: entity_assets
+-- Cloudinary-backed logo/person/product assets
+-- ======================================
+create table if not exists entity_assets (
+    id                              bigint generated always as identity primary key,
+    entity_slug                     text not null references entities(slug) on delete cascade,
+    asset_type                      text not null check (
+        asset_type in (
+            'logo_icon',
+            'logo_wordmark',
+            'person_reference',
+            'person_cutout',
+            'product_photo',
+            'source_photo',
+            'symbol'
+        )
+    ),
+    variant                         text not null default 'primary',
+    display_name                    text,
+    person_entity_slug              text references entities(slug) on delete set null,
+    source_url                      text,
+    source_name                     text,
+    license_note                    text,
+    cloudinary_url                  text not null,
+    cloudinary_public_id            text,
+    cutout_cloudinary_url           text,
+    cutout_cloudinary_public_id     text,
+    width                           int,
+    height                          int,
+    quality_score                   int check (quality_score is null or quality_score between 0 and 100),
+    status                          text not null default 'needs_review' check (
+        status in ('needs_review', 'approved', 'rejected', 'archived')
+    ),
+    metadata                        jsonb not null default '{}'::jsonb,
+    created_at                      timestamptz not null default now(),
+    updated_at                      timestamptz not null default now()
+);
+
+create unique index if not exists idx_entity_assets_unique_variant
+    on entity_assets(entity_slug, asset_type, variant, person_entity_slug) nulls not distinct;
+
+create index if not exists idx_entity_assets_lookup
+    on entity_assets(entity_slug, asset_type, status, quality_score desc nulls last);
+
+-- ======================================
+-- TABLE: image_style_presets
+-- Prompt templates for AI image visual directions
+-- ======================================
+create table if not exists image_style_presets (
+    slug                        text primary key,
+    name                        text not null,
+    category                    text not null default 'editorial',
+    prompt_template             text not null,
+    negative_prompt             text not null default '',
+    use_cases                   text[] not null default '{}',
+    requires_entity_assets      boolean not null default false,
+    supports_person_reference   boolean not null default false,
+    supports_logo_layer         boolean not null default true,
+    priority                    int not null default 100,
+    is_active                   boolean not null default true,
+    metadata                    jsonb not null default '{}'::jsonb,
+    created_at                  timestamptz not null default now(),
+    updated_at                  timestamptz not null default now()
+);
+
+create index if not exists idx_image_style_presets_active
+    on image_style_presets(is_active, priority, category);
+
 
 -- ═══════════════════════════════════════
 -- ТАБЛИЦА: api_keys
@@ -254,6 +342,21 @@ create trigger content_playbooks_updated
 drop trigger if exists template_bindings_updated on template_bindings;
 create trigger template_bindings_updated
     before update on template_bindings
+    for each row execute function update_modified_column();
+
+drop trigger if exists entities_updated on entities;
+create trigger entities_updated
+    before update on entities
+    for each row execute function update_modified_column();
+
+drop trigger if exists entity_assets_updated on entity_assets;
+create trigger entity_assets_updated
+    before update on entity_assets
+    for each row execute function update_modified_column();
+
+drop trigger if exists image_style_presets_updated on image_style_presets;
+create trigger image_style_presets_updated
+    before update on image_style_presets
     for each row execute function update_modified_column();
 
 
