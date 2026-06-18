@@ -243,8 +243,8 @@ const GenerationEventSchema = z.object({
     kind:        z.enum(['classify', 'copy', 'image_prompt', 'caption_regen']),
     provider:    z.string().min(1).max(50),
     model:       z.string().max(100).optional(),
-    prompt:      z.record(z.any()),          // { system, user } or { prompt, angle, temperature }
-    response:    z.record(z.any()).nullable().optional(),
+    prompt:      z.record(z.string(), z.any()),          // { system, user } or { prompt, angle, temperature }
+    response:    z.record(z.string(), z.any()).nullable().optional(),
     outcome:     z.enum(['ok', 'error', 'fallback']),
     error:       z.string().max(2000).optional(),
     latency_ms:  z.number().int().min(0).max(300_000).optional()
@@ -329,7 +329,7 @@ const EntityAssetSchema = z.object({
     height: z.number().int().positive().nullable().optional(),
     quality_score: z.number().int().min(0).max(100).nullable().optional(),
     status: z.enum(['needs_review', 'approved', 'rejected', 'archived']).optional(),
-    metadata: z.record(z.any()).optional()
+    metadata: z.record(z.string(), z.any()).optional()
 }).passthrough();
 
 const ImageStylePresetSchema = z.object({
@@ -344,7 +344,7 @@ const ImageStylePresetSchema = z.object({
     supports_logo_layer: z.boolean().optional(),
     priority: z.number().int().min(1).max(1000).optional(),
     is_active: z.boolean().optional(),
-    metadata: z.record(z.any()).optional()
+    metadata: z.record(z.string(), z.any()).optional()
 }).passthrough();
 
 // Best-effort audit log: writes to playbook_audit table.
