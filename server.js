@@ -43,6 +43,12 @@ const { z } = require('zod');
 const pino = require('pino');
 const pinoHttp = require('pino-http');
 const { createClient } = require('@supabase/supabase-js');
+const {
+    buildFallbackArticleBrief,
+    buildArticleBriefPrompt,
+    normalizeArticleBrief,
+    articleBriefToScore
+} = require('./lib/articleBrief');
 
 const logger = pino({ name: 'adilflow-brain' });
 
@@ -903,7 +909,7 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
         // Берём статьи со статусом "raw"
         let query = supabase
             .from('articles')
-            .select('id, raw_title, raw_text, raw_summary, niche')
+            .select('id, url, raw_title, raw_text, raw_summary, top_image, source_name, source_domain, published_at, parsed_at, niche, scores_detail')
             .eq('status', 'raw')
             .order('parsed_at', { ascending: false })
             .limit(limit);
@@ -935,7 +941,7 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
         for (const article of articles) {
             try {
                 // Ensemble: GPT-4o-mini оценивает релевантность
-                const score = await classifyWithGPT(article, nicheConfigs[article.niche]);
+                const { score, brief } = await classifyAndBriefWithGPT(article, nicheConfigs[article.niche]);
 
                 const newStatus = score >= 6 ? 'classified' : 'rejected';
 
@@ -943,7 +949,7 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
                     .from('articles')
                     .update({
                         relevance_score: score,
-                        scores_detail: { gpt: score },
+                        scores_detail: mergeScoreDetails(article.scores_detail, { gpt: score, article_brief: brief }),
                         status: newStatus,
                         classified_at: new Date().toISOString()
                     })
@@ -965,6 +971,91 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
         res.status(500).json({ error: e.message });
     }
 });
+
+
+async function classifyAndBriefWithGPT(article, nicheConfig) {
+    const fallbackBrief = buildFallbackArticleBrief(article);
+    const fallbackScore = articleBriefToScore(fallbackBrief, 5);
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return { score: fallbackScore, brief: fallbackBrief };
+
+    if (openaiBreaker.state === 'OPEN' && Date.now() < openaiBreaker.nextAttempt) {
+        logger.warn({ provider: 'openai', articleId: article.id, breaker: openaiBreaker.getStatus() }, 'GPT classify/brief skipped - circuit breaker OPEN, using fallback');
+        return { score: fallbackScore, brief: fallbackBrief };
+    }
+
+    const prompt = buildArticleBriefPrompt(article, nicheConfig, fallbackBrief);
+    const start = Date.now();
+
+    try {
+        const data = await openaiBreaker.exec(() => pRetry(async () => {
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o-mini',
+                    messages: [{ role: 'user', content: prompt }],
+                    response_format: { type: 'json_object' },
+                    max_tokens: 1400,
+                    temperature: 0.2
+                })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                if (response.status >= 400 && response.status < 500) {
+                    throw new AbortError(`OpenAI ${response.status}: ${result.error?.message || 'Client error'}`);
+                }
+                throw new Error(`OpenAI ${response.status}: ${result.error?.message || 'Server error'}`);
+            }
+            return result;
+        }, {
+            retries: 3,
+            minTimeout: 1000,
+            onFailedAttempt: (err) => {
+                logger.warn({ provider: 'openai', articleId: article.id, attempt: err.attemptNumber, retriesLeft: err.retriesLeft, error: err.message }, 'GPT classify/brief retry');
+            }
+        }));
+
+        const text = data.choices?.[0]?.message?.content?.trim() || '';
+        const brief = normalizeArticleBrief(text, article, fallbackBrief);
+        const score = articleBriefToScore(brief, fallbackScore);
+        const latencyMs = Date.now() - start;
+        logger.info({ provider: 'openai', latencyMs, articleId: article.id, score, angle: brief.segmentation?.angle }, 'GPT classification/brief ok');
+
+        supabase.from('generation_events').insert({
+            article_id: article.id,
+            kind: 'classify',
+            provider: 'openai',
+            model: 'gpt-4o-mini',
+            prompt: { system: null, user: prompt },
+            response: { score, brief },
+            outcome: 'ok',
+            latency_ms: latencyMs
+        }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'classify event log failed'));
+
+        return { score, brief };
+    } catch (e) {
+        const latencyMs = Date.now() - start;
+        logger.error({ provider: 'openai', latencyMs, articleId: article.id, error: e.message }, 'GPT classification/brief failed, using fallback');
+
+        supabase.from('generation_events').insert({
+            article_id: article.id,
+            kind: 'classify',
+            provider: 'openai',
+            model: 'gpt-4o-mini',
+            prompt: { system: null, user: prompt },
+            response: null,
+            outcome: 'error',
+            error: String(e.message).slice(0, 2000),
+            latency_ms: latencyMs
+        }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'classify error event log failed'));
+
+        return { score: fallbackScore, brief: fallbackBrief };
+    }
+}
 
 
 async function classifyWithGPT(article, nicheConfig) {
@@ -1856,7 +1947,7 @@ app.post('/api/articles/:id/classify-one', authMiddleware, async (req, res) => {
 
         const { data: article, error: loadError } = await supabase
             .from('articles')
-            .select('id, raw_title, raw_text, raw_summary, niche, status')
+            .select('id, url, raw_title, raw_text, raw_summary, top_image, source_name, source_domain, published_at, parsed_at, niche, status, scores_detail')
             .eq('id', id)
             .single();
 
@@ -1878,14 +1969,14 @@ app.post('/api/articles/:id/classify-one', authMiddleware, async (req, res) => {
             .eq('id', article.niche)
             .single();
 
-        const score = await classifyWithGPT(article, nicheConfig);
+        const { score, brief } = await classifyAndBriefWithGPT(article, nicheConfig);
         const newStatus = score >= 6 ? 'classified' : 'rejected';
 
         const { error: updateError } = await supabase
             .from('articles')
             .update({
                 relevance_score: score,
-                scores_detail: { gpt: score },
+                scores_detail: mergeScoreDetails(article.scores_detail, { gpt: score, article_brief: brief }),
                 status: newStatus,
                 classified_at: new Date().toISOString()
             })
