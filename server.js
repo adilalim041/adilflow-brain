@@ -49,6 +49,11 @@ const {
     normalizeArticleBrief,
     articleBriefToScore
 } = require('./lib/articleBrief');
+const {
+    buildFallbackContentPlan,
+    buildContentPlanPrompt,
+    normalizeContentPlan
+} = require('./lib/contentPlan');
 
 const logger = pino({ name: 'adilflow-brain' });
 
@@ -941,7 +946,7 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
         for (const article of articles) {
             try {
                 // Ensemble: GPT-4o-mini оценивает релевантность
-                const { score, brief } = await classifyAndBriefWithGPT(article, nicheConfigs[article.niche]);
+                const { score, brief, contentPlan } = await classifyAndBriefWithGPT(article, nicheConfigs[article.niche]);
 
                 const newStatus = score >= 6 ? 'classified' : 'rejected';
 
@@ -949,7 +954,11 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
                     .from('articles')
                     .update({
                         relevance_score: score,
-                        scores_detail: mergeScoreDetails(article.scores_detail, { gpt: score, article_brief: brief }),
+                        scores_detail: mergeScoreDetails(article.scores_detail, {
+                            gpt: score,
+                            article_brief: brief,
+                            content_plan: contentPlan
+                        }),
                         status: newStatus,
                         classified_at: new Date().toISOString()
                     })
@@ -976,12 +985,13 @@ app.post('/api/classify', authMiddleware, validate(ClassifySchema), async (req, 
 async function classifyAndBriefWithGPT(article, nicheConfig) {
     const fallbackBrief = buildFallbackArticleBrief(article);
     const fallbackScore = articleBriefToScore(fallbackBrief, 5);
+    const fallbackContentPlan = buildFallbackContentPlan(article, fallbackBrief);
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return { score: fallbackScore, brief: fallbackBrief };
+    if (!apiKey) return { score: fallbackScore, brief: fallbackBrief, contentPlan: fallbackContentPlan };
 
     if (openaiBreaker.state === 'OPEN' && Date.now() < openaiBreaker.nextAttempt) {
         logger.warn({ provider: 'openai', articleId: article.id, breaker: openaiBreaker.getStatus() }, 'GPT classify/brief skipped - circuit breaker OPEN, using fallback');
-        return { score: fallbackScore, brief: fallbackBrief };
+        return { score: fallbackScore, brief: fallbackBrief, contentPlan: fallbackContentPlan };
     }
 
     const prompt = buildArticleBriefPrompt(article, nicheConfig, fallbackBrief);
@@ -1036,7 +1046,8 @@ async function classifyAndBriefWithGPT(article, nicheConfig) {
             latency_ms: latencyMs
         }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'classify event log failed'));
 
-        return { score, brief };
+        const contentPlan = await generateContentPlanWithGPT(article, brief, nicheConfig);
+        return { score, brief, contentPlan };
     } catch (e) {
         const latencyMs = Date.now() - start;
         logger.error({ provider: 'openai', latencyMs, articleId: article.id, error: e.message }, 'GPT classification/brief failed, using fallback');
@@ -1053,7 +1064,89 @@ async function classifyAndBriefWithGPT(article, nicheConfig) {
             latency_ms: latencyMs
         }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'classify error event log failed'));
 
-        return { score: fallbackScore, brief: fallbackBrief };
+        return { score: fallbackScore, brief: fallbackBrief, contentPlan: fallbackContentPlan };
+    }
+}
+
+async function generateContentPlanWithGPT(article, brief, nicheConfig) {
+    const fallbackPlan = buildFallbackContentPlan(article, brief);
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return fallbackPlan;
+
+    if (openaiBreaker.state === 'OPEN' && Date.now() < openaiBreaker.nextAttempt) {
+        logger.warn({ provider: 'openai', articleId: article.id, breaker: openaiBreaker.getStatus() }, 'GPT content plan skipped - circuit breaker OPEN, using fallback');
+        return fallbackPlan;
+    }
+
+    const prompt = buildContentPlanPrompt(article, brief, nicheConfig, fallbackPlan);
+    const start = Date.now();
+
+    try {
+        const data = await openaiBreaker.exec(() => pRetry(async () => {
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o-mini',
+                    messages: [{ role: 'user', content: prompt }],
+                    response_format: { type: 'json_object' },
+                    max_tokens: 1300,
+                    temperature: 0.45
+                })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                if (response.status >= 400 && response.status < 500) {
+                    throw new AbortError(`OpenAI ${response.status}: ${result.error?.message || 'Client error'}`);
+                }
+                throw new Error(`OpenAI ${response.status}: ${result.error?.message || 'Server error'}`);
+            }
+            return result;
+        }, {
+            retries: 3,
+            minTimeout: 1000,
+            onFailedAttempt: (err) => {
+                logger.warn({ provider: 'openai', articleId: article.id, attempt: err.attemptNumber, retriesLeft: err.retriesLeft, error: err.message }, 'GPT content plan retry');
+            }
+        }));
+
+        const text = data.choices?.[0]?.message?.content?.trim() || '';
+        const contentPlan = normalizeContentPlan(text, article, brief, fallbackPlan);
+        const latencyMs = Date.now() - start;
+        logger.info({ provider: 'openai', latencyMs, articleId: article.id, angle: contentPlan.visual?.angle }, 'GPT content plan ok');
+
+        supabase.from('generation_events').insert({
+            article_id: article.id,
+            kind: 'copy',
+            provider: 'openai',
+            model: 'gpt-4o-mini',
+            prompt: { system: null, user: prompt },
+            response: contentPlan,
+            outcome: 'ok',
+            latency_ms: latencyMs
+        }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'content plan event log failed'));
+
+        return contentPlan;
+    } catch (e) {
+        const latencyMs = Date.now() - start;
+        logger.error({ provider: 'openai', latencyMs, articleId: article.id, error: e.message }, 'GPT content plan failed, using fallback');
+
+        supabase.from('generation_events').insert({
+            article_id: article.id,
+            kind: 'copy',
+            provider: 'openai',
+            model: 'gpt-4o-mini',
+            prompt: { system: null, user: prompt },
+            response: null,
+            outcome: 'fallback',
+            error: String(e.message).slice(0, 2000),
+            latency_ms: latencyMs
+        }).then(() => {}, err => logger.warn({ err: err.message, articleId: article.id }, 'content plan error event log failed'));
+
+        return fallbackPlan;
     }
 }
 
@@ -1969,14 +2062,18 @@ app.post('/api/articles/:id/classify-one', authMiddleware, async (req, res) => {
             .eq('id', article.niche)
             .single();
 
-        const { score, brief } = await classifyAndBriefWithGPT(article, nicheConfig);
+        const { score, brief, contentPlan } = await classifyAndBriefWithGPT(article, nicheConfig);
         const newStatus = score >= 6 ? 'classified' : 'rejected';
 
         const { error: updateError } = await supabase
             .from('articles')
             .update({
                 relevance_score: score,
-                scores_detail: mergeScoreDetails(article.scores_detail, { gpt: score, article_brief: brief }),
+                scores_detail: mergeScoreDetails(article.scores_detail, {
+                    gpt: score,
+                    article_brief: brief,
+                    content_plan: contentPlan
+                }),
                 status: newStatus,
                 classified_at: new Date().toISOString()
             })
