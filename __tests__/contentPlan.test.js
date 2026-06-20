@@ -16,6 +16,7 @@ describe('content plan fallback', () => {
         const plan = buildFallbackContentPlan(article, brief);
 
         expect(plan.copy.headline_ru).toContain('ANTHROPIC');
+        expect(plan.copy.headline2_ru).toBe('');
         expect(plan.copy.hashtags).toContain('#Anthropic');
         expect(plan.visual.angle).toBe('government-pressure');
         expect(plan.visual.image_prompt).toContain('Dario Amodei');
@@ -50,8 +51,37 @@ describe('content plan fallback', () => {
         expect(plan.source).toBe('llm');
         expect(plan.template.template_id).toBe('ctrl-light-news');
         expect(plan.copy.headline_ru).toBe('OPENAI РАЗДАЕТ ТОКЕНЫ КАК КОНФЕТЫ');
+        expect(plan.copy.headline2_ru).toBe('');
         expect(plan.visual.angle).toBe('free-credit-giveaway');
         expect(plan.visual.needs_company_logo).toBeUndefined();
+    });
+
+    it('removes false government-pressure angle from LLM content plans', () => {
+        const article = {
+            raw_title: 'OpenAI introduces new enterprise spend controls for ChatGPT teams',
+            raw_summary: 'Businesses can manage seats, usage, and budgets.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan(JSON.stringify({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI UNDER GOVERNMENT PRESSURE',
+                headline2_ru: 'Extra subheadline',
+                caption_ru: 'OpenAI added business controls.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow AI news'
+            },
+            visual: {
+                image_prompt: 'Sam Altman in an enterprise control room, photorealistic satire, no text, no logos.',
+                angle: 'government-pressure'
+            }
+        }), article, brief, fallback);
+
+        expect(plan.copy.headline2_ru).toBe('');
+        expect(plan.copy.headline_ru).not.toContain('GOVERNMENT');
+        expect(plan.visual.image_prompt).not.toContain('government stamp');
+        expect(plan.visual.angle).toBe('workflow-productivity');
     });
 });
 

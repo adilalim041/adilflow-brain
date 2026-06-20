@@ -41,6 +41,20 @@ describe('article brief fallback', () => {
         expect(brief.creative_brief.satirical_scene).toContain('angelic');
     });
 
+    it('does not invent government pressure for OpenAI enterprise control stories', () => {
+        const article = {
+            raw_title: 'OpenAI introduces new enterprise spend controls for ChatGPT teams',
+            raw_summary: 'The company added admin tools so businesses can manage seats, usage, and budgets.',
+            raw_text: 'The update helps enterprise customers control spending and monitor product usage.'
+        };
+
+        const brief = buildFallbackArticleBrief(article);
+
+        expect(brief.entities.main_company).toBe('OpenAI');
+        expect(brief.segmentation.angle).toBe('workflow-productivity');
+        expect(brief.entities.opposing_actor).toBeNull();
+    });
+
     it('marks generated background as needed when no source image exists', () => {
         const article = {
             raw_title: 'Meta launches a new Llama model',
@@ -82,6 +96,26 @@ describe('article brief normalization', () => {
         const brief = normalizeArticleBrief('not-json', article, fallback);
 
         expect(brief).toEqual(fallback);
+    });
+
+    it('downgrades LLM government-pressure when the article has no government cue', () => {
+        const article = {
+            raw_title: 'OpenAI introduces new enterprise spend controls for ChatGPT teams',
+            raw_summary: 'Businesses can manage seats, usage, and budgets.',
+            raw_text: 'The update is about admin controls for enterprise customers.'
+        };
+        const fallback = buildFallbackArticleBrief(article);
+        const brief = normalizeArticleBrief(JSON.stringify({
+            source: 'llm',
+            suitability: { score: 8, is_suitable: true },
+            segmentation: { angle: 'government-pressure', mood: 'conflict' },
+            entities: { main_company: 'OpenAI', opposing_actor: 'US government / regulators' },
+            story_logic: { to_whom: 'government pressure / regulation' }
+        }), article, fallback);
+
+        expect(brief.segmentation.angle).toBe('workflow-productivity');
+        expect(brief.entities.opposing_actor).toBeNull();
+        expect(brief.story_logic.risk_of_misread).toContain('Do not invent');
     });
 });
 
