@@ -45,6 +45,43 @@ describe('content plan fallback', () => {
             visual: {
                 image_prompt: 'Sam Altman as a generous tech founder handing out glowing token coupons, photorealistic editorial satire, no text, no logos.',
                 angle: 'free-credit-giveaway'
+            },
+            creative_director: {
+                human_conflict: 'OpenAI wants developer attention while rivals look stingy.',
+                concepts: [
+                    {
+                        name: 'Coupon angel',
+                        visual_style: 'leaked flash photo',
+                        scene_context: 'developer meetup',
+                        satirical_action: 'Sam Altman handing glowing coupons to exhausted developers',
+                        why_location_fits: 'The news is about developers receiving credits.',
+                        why_it_works: 'The giveaway becomes instantly visible.',
+                        risk: 'Keep coupons unreadable.',
+                        thumbnail_score: 9
+                    },
+                    {
+                        name: 'Rival cashier',
+                        visual_style: 'phone reportage',
+                        scene_context: 'software checkout counter',
+                        satirical_action: 'Sam opens the gate while rivals count coins',
+                        why_location_fits: 'The story is about paid access and credits.',
+                        why_it_works: 'It makes the cost contrast obvious.',
+                        risk: 'Avoid readable price tags.',
+                        thumbnail_score: 8
+                    },
+                    {
+                        name: 'Token rain',
+                        visual_style: 'press photographer shot',
+                        scene_context: 'hackathon stage',
+                        satirical_action: 'developers catch glowing token cards falling from above',
+                        why_location_fits: 'Hackathons are a natural developer setting.',
+                        why_it_works: 'It reads as a giveaway in one second.',
+                        risk: 'No readable text on cards.',
+                        thumbnail_score: 8
+                    }
+                ],
+                selected_concept: 'Coupon angel',
+                selection_reason: 'Fastest to understand.'
             }
         }), article, brief, fallback);
 
@@ -53,7 +90,54 @@ describe('content plan fallback', () => {
         expect(plan.copy.headline_ru).toBe('OPENAI РАЗДАЕТ ТОКЕНЫ КАК КОНФЕТЫ');
         expect(plan.copy.headline2_ru).toBe('');
         expect(plan.visual.angle).toBe('free-credit-giveaway');
+        expect(plan.visual.image_prompt).toContain('Do not generate readable words');
         expect(plan.visual.needs_company_logo).toBeUndefined();
+        expect(plan.creative_director.concepts).toHaveLength(3);
+        expect(plan.creative_director.quality_flags).toEqual([]);
+        expect(plan.creative_director.selected_concept).toBe('Coupon angel');
+    });
+
+    it('preserves weak creative director output and flags it for audit', () => {
+        const article = {
+            raw_title: 'Anthropic and US officials remain stuck over Mythos exports',
+            raw_summary: 'The model access dispute is unresolved.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        brief.entities.products = ['Mythos', 'Fable'];
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Anthropic Рё С€С‚Р°С‚С‹ Р·Р°СЃС‚СЂСЏР»Рё Сѓ РґРІРµСЂРё Mythos',
+                caption_ru: 'Anthropic and US officials remain stuck over model exports.',
+                hashtags: '#Anthropic #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Dario Amodei at a locked metal door, photorealistic satire, no text, no logos.',
+                angle: 'government-pressure'
+            },
+            creative_director: {
+                human_conflict: '',
+                concepts: [
+                    {
+                        name: 'Locked door',
+                        visual_style: 'flash photo',
+                        scene_context: 'government hallway',
+                        satirical_action: 'Dario reaches for a locked door marked Unauthorized',
+                        why_location_fits: 'Export restrictions involve government pressure.',
+                        thumbnail_score: 7
+                    }
+                ],
+                selected_concept: 'Locked door',
+                selection_reason: 'Simple.'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.concepts).toHaveLength(1);
+        expect(plan.creative_director.quality_flags).toContain('too_few_concepts');
+        expect(plan.creative_director.quality_flags).toContain('missing_human_conflict');
+        expect(plan.creative_director.quality_flags).toContain('readable_text_risk');
     });
 
     it('removes false government-pressure angle from LLM content plans', () => {
@@ -83,6 +167,62 @@ describe('content plan fallback', () => {
         expect(plan.visual.image_prompt).not.toContain('government stamp');
         expect(plan.visual.angle).toBe('workflow-productivity');
     });
+
+    it('restores protected product names when the LLM translates them by meaning', () => {
+        const article = {
+            raw_title: 'Inside the deadlock keeping Mythos and Fable offline',
+            raw_summary: 'Anthropic and the U.S. government remain stuck over export restrictions.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        brief.entities.products = ['Mythos', 'Fable'];
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: '\u0411\u0438\u0442\u0432\u0430 Anthropic \u0441 \u043f\u0440\u0430\u0432\u0438\u0442\u0435\u043b\u044c\u0441\u0442\u0432\u043e\u043c \u0421\u0428\u0410: \u043c\u0438\u0444\u044b \u0438 \u0431\u0430\u0441\u043d\u0438 \u0432 \u043e\u0444\u043b\u0430\u0439\u043d\u0435',
+                caption_ru: '\u041c\u0438\u0444\u044b \u0438 \u0431\u0430\u0441\u043d\u0438 \u0437\u0430\u0441\u0442\u0440\u044f\u043b\u0438 \u0438\u0437-\u0437\u0430 \u044d\u043a\u0441\u043f\u043e\u0440\u0442\u043d\u044b\u0445 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0439.',
+                hashtags: '#Anthropic #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Dario Amodei blocked by government officials, no text, no logos.',
+                angle: 'government-pressure'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.copy.headline_ru).toContain('MYTHOS');
+        expect(plan.copy.headline_ru).toContain('FABLE');
+        expect(plan.copy.headline_ru).not.toContain('\u041c\u0418\u0424');
+        expect(plan.copy.caption_ru).toContain('MYTHOS');
+        expect(plan.copy.caption_ru).toContain('FABLE');
+    });
+
+    it('sanitizes image prompts that ask for readable signs or robots', () => {
+        const article = {
+            raw_title: 'Inside the deadlock keeping Mythos offline',
+            raw_summary: 'Anthropic and the U.S. government remain stuck over export restrictions.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        brief.entities.products = ['Mythos'];
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Anthropic fights for Mythos',
+                caption_ru: 'Anthropic remains stuck with the U.S. government.',
+                hashtags: '#Anthropic #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Dario Amodei holding a large sign labeled \"EXPORT RESTRICTIONS\" while anthropomorphic robots squeeze through a gate.',
+                angle: 'government-pressure'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).not.toMatch(/labeled|EXPORT|robots/i);
+        expect(plan.visual.image_prompt).toContain('blank bureaucratic prop');
+        expect(plan.creative_director.quality_flags).toContain('readable_text_risk');
+    });
 });
 
 describe('content plan prompt', () => {
@@ -108,5 +248,15 @@ describe('content plan prompt', () => {
         expect(prompt).toContain('why_location_fits');
         expect(prompt).toContain('who is being mocked');
         expect(prompt).toContain('Prefer obvious satirical mechanics over clever metaphors');
+        expect(prompt).toContain('Never return fewer than 3 concepts');
+        expect(prompt).toContain('Forbidden headline crutches');
+        expect(prompt).toContain('If the joke needs explanation, reject it');
+        expect(prompt).toContain('Do not write props like a door labeled');
+        expect(prompt).toContain('partnerships, integrations, customer stories');
+        expect(prompt).toContain('Never translate it as "английское"');
+        expect(prompt).toContain('bars marked "Unauthorized"');
+        expect(prompt).toContain('Mythos is not "мифы"');
+        expect(prompt).toContain('avoid vague headline abstractions');
+        expect(prompt).toContain('Every concept must describe a specific foreground action');
     });
 });

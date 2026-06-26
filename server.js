@@ -1093,8 +1093,8 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
                     model: 'gpt-4o-mini',
                     messages: [{ role: 'user', content: prompt }],
                     response_format: { type: 'json_object' },
-                    max_tokens: 1300,
-                    temperature: 0.45
+                    max_tokens: 2400,
+                    temperature: 0.75
                 })
             });
             const result = await response.json();
@@ -1114,7 +1114,79 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
         }));
 
         const text = data.choices?.[0]?.message?.content?.trim() || '';
-        const contentPlan = normalizeContentPlan(text, article, brief, fallbackPlan);
+        let contentPlan = normalizeContentPlan(text, article, brief, fallbackPlan);
+        const qualityFlags = contentPlan.creative_director?.quality_flags || [];
+        const shouldRevise = qualityFlags.some(flag => [
+            'too_few_concepts',
+            'missing_human_conflict',
+            'weak_satirical_mechanics',
+            'readable_text_risk'
+        ].includes(flag));
+
+        if (shouldRevise) {
+            const revisionPrompt = `${prompt}
+
+QUALITY GATE FAILED.
+The previous JSON was too weak for publication.
+Failed flags: ${qualityFlags.join(', ')}
+
+Previous JSON:
+${JSON.stringify(contentPlan)}
+
+Revise it now. Return ONLY the full corrected JSON.
+Hard requirements:
+- creative_director.concepts must contain 3-5 substantially different concepts.
+- No readable text, labels, signs, posters, banners, interface text, logos, watermarks, or brand marks in concepts or image_prompt.
+- Do not use robots, generic data streams, or static portraits.
+- visual.image_prompt must be written in English only.
+- Keep product/model/person/company names exactly as article_brief states them.
+- Make the satire obvious in 2 seconds: visible power mechanic, embarrassment, restraint, status reversal, or someone holding control.
+- Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.
+- Keep the real agency of the story.`;
+
+            logger.warn({ provider: 'openai', articleId: article.id, flags: qualityFlags }, 'GPT content plan quality gate retry');
+
+            const revisionData = await openaiBreaker.exec(() => pRetry(async () => {
+                const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'gpt-4o-mini',
+                        messages: [{ role: 'user', content: revisionPrompt }],
+                        response_format: { type: 'json_object' },
+                        max_tokens: 2400,
+                        temperature: 0.85
+                    })
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    if (response.status >= 400 && response.status < 500) {
+                        throw new AbortError(`OpenAI ${response.status}: ${result.error?.message || 'Client error'}`);
+                    }
+                    throw new Error(`OpenAI ${response.status}: ${result.error?.message || 'Server error'}`);
+                }
+                return result;
+            }, {
+                retries: 1,
+                minTimeout: 1000,
+                onFailedAttempt: (err) => {
+                    logger.warn({ provider: 'openai', articleId: article.id, attempt: err.attemptNumber, retriesLeft: err.retriesLeft, error: err.message }, 'GPT content plan quality retry failed attempt');
+                }
+            }));
+
+            const revisionText = revisionData.choices?.[0]?.message?.content?.trim() || '';
+            const revisedPlan = normalizeContentPlan(revisionText, article, brief, fallbackPlan);
+            revisedPlan.creative_director = revisedPlan.creative_director || {};
+            revisedPlan.creative_director.revision = {
+                attempted: true,
+                previous_flags: qualityFlags,
+                remaining_flags: revisedPlan.creative_director.quality_flags || []
+            };
+            contentPlan = revisedPlan;
+        }
         const latencyMs = Date.now() - start;
         logger.info({ provider: 'openai', latencyMs, articleId: article.id, angle: contentPlan.visual?.angle }, 'GPT content plan ok');
 
