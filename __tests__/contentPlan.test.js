@@ -104,5 +104,9 @@ describe('content plan prompt', () => {
         expect(prompt).toContain('generate 8-12 radically different visual concepts');
         expect(prompt).toContain('creative_director');
         expect(prompt).toContain('Anti-boring rule');
+        expect(prompt).toContain('Separate reusable camera style from story-specific location');
+        expect(prompt).toContain('why_location_fits');
+        expect(prompt).toContain('who is being mocked');
+        expect(prompt).toContain('Prefer obvious satirical mechanics over clever metaphors');
     });
 });
