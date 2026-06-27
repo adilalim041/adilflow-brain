@@ -221,7 +221,7 @@ describe('content plan fallback', () => {
 
         expect(plan.visual.image_prompt).not.toMatch(/labeled|EXPORT|robots/i);
         expect(plan.visual.image_prompt).toContain('blank bureaucratic prop');
-        expect(plan.creative_director.quality_flags).toContain('readable_text_risk');
+        expect(plan.creative_director.quality_flags).not.toContain('readable_text_risk');
     });
 
     it('sanitizes cartoonish style and irrelevant benchmark-board contamination', () => {
@@ -450,6 +450,291 @@ describe('content plan fallback', () => {
         expect(plan.visual.image_prompt).toMatch(/restricted-access badge|security tether|wrist tether|turnstile/i);
         expect(plan.visual.image_prompt).not.toMatch(/labeled/i);
     });
+
+    it('sanitizes gendered office-assistant and restraint metaphors', () => {
+        const article = {
+            raw_title: 'Anthropic launches Claude Office Secretary for enterprise teams',
+            raw_summary: 'Claude helps teams schedule meetings, draft notes, and organize workflows.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Anthropic и Claude ставят офисных секретарш на короткий поводок',
+                caption_ru: 'Claude helps teams schedule meetings.',
+                hashtags: '#Anthropic #Claude',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Dario Amodei with secretaries chained to a giant schedule clipboard, handcuffs everywhere, remote control labeled as workflow lever.',
+                angle: 'workflow-productivity'
+            },
+            creative_director: {
+                human_conflict: 'Office secretaries are chained by the workflow.',
+                selected_concept: 'Office secretaries chained to calendars',
+                rejected_obvious_metaphor: 'static founder portrait',
+                concepts: [
+                    {
+                        name: 'Secretaries chained to calendar',
+                        visual_style: 'press photo',
+                        scene_context: 'office',
+                        satirical_action: 'secretaries chained to a calendar with handcuffs',
+                        why_location_fits: 'office assistant product',
+                        why_it_works: 'shows scheduling burden',
+                        risk: 'gendered',
+                        thumbnail_score: 7
+                    },
+                    {
+                        name: 'Managers trapped in meetings',
+                        visual_style: 'phone reportage',
+                        scene_context: 'boardroom',
+                        satirical_action: 'менеджеры как пленники в бумажных оковах держат штамп «Одобрено»',
+                        why_location_fits: 'workflow story',
+                        why_it_works: 'office chaos',
+                        risk: 'safe',
+                        thumbnail_score: 8
+                    },
+                    {
+                        name: 'Planner prop overload',
+                        visual_style: 'press photo',
+                        scene_context: 'office hallway',
+                        satirical_action: 'executives struggle with blank oversized planner props',
+                        why_location_fits: 'calendar story',
+                        why_it_works: 'clear metaphor',
+                        risk: 'safe',
+                        thumbnail_score: 8
+                    }
+                ],
+                selection_reason: 'clear office burden'
+            }
+        }, article, brief, fallback);
+
+        const text = JSON.stringify(plan);
+        expect(plan.copy.headline_ru).not.toMatch(/секретарш|приковал|поводок/i);
+        expect(text).not.toMatch(/secretar|handcuff|chain|поводк|пленник|оков|«Одобрено»/i);
+        expect(text).not.toMatch(/labeled as/i);
+        expect(plan.visual.image_prompt).toMatch(/office staff|red tape|blank oversized planner prop/i);
+    });
+
+    it('preserves capitalized Office Secretary product names while sanitizing generic secretary role text', () => {
+        const article = {
+            raw_title: 'Anthropic launches Claude Office Secretary',
+            raw_summary: 'The product schedules meetings and organizes workflows.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        brief.entities.products = ['Claude Office Secretary'];
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Claude Office Secretary берет офис под контроль',
+                caption_ru: 'Anthropic announced Claude Office Secretary.',
+                hashtags: '#Anthropic #Claude',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Claude Office Secretary as a calm office assistant while a secretary runs through the office.',
+                angle: 'workflow-productivity'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).toContain('Claude Office Secretary');
+        expect(plan.visual.image_prompt).not.toMatch(/Office office assistant role/i);
+        expect(plan.visual.image_prompt).toContain('office assistant runs through the office');
+    });
+
+    it('sanitizes logo mentions inside backup concepts without forcing a retry', () => {
+        const article = {
+            raw_title: 'Anthropic launches Claude Office Secretary',
+            raw_summary: 'The product organizes office workflows.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Claude Office Secretary controls office chaos',
+                caption_ru: 'Anthropic announced an office workflow assistant.',
+                hashtags: '#Anthropic #Claude',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Dario Amodei directs office workers toward a digital screen with logo Claude.',
+                angle: 'workflow-productivity'
+            },
+            creative_director: {
+                human_conflict: 'Managers fight calendar chaos.',
+                selected_concept: 'Office chaos conductor',
+                rejected_obvious_metaphor: 'static product screenshot',
+                concepts: [
+                    {
+                        name: 'Office screen',
+                        visual_style: 'press photo',
+                        scene_context: 'office',
+                        satirical_action: 'workers run toward a digital screen with logo Claude',
+                        why_location_fits: 'workflow product',
+                        why_it_works: 'shows software control',
+                        risk: 'logo risk',
+                        thumbnail_score: 7
+                    },
+                    {
+                        name: 'Calendar trap',
+                        visual_style: 'phone reportage',
+                        scene_context: 'boardroom',
+                        satirical_action: 'managers tangled in red tape',
+                        why_location_fits: 'workflow product',
+                        why_it_works: 'calendar chaos',
+                        risk: 'safe',
+                        thumbnail_score: 8
+                    },
+                    {
+                        name: 'Planner overload',
+                        visual_style: 'press photo',
+                        scene_context: 'office hallway',
+                        satirical_action: 'executives carry blank planner props',
+                        why_location_fits: 'calendar product',
+                        why_it_works: 'visual metaphor',
+                        risk: 'safe',
+                        thumbnail_score: 8
+                    }
+                ],
+                selection_reason: 'clear'
+            }
+        }, article, brief, fallback);
+
+        expect(JSON.stringify(plan)).not.toMatch(/logo Claude/i);
+        expect(plan.creative_director.quality_flags).not.toContain('readable_text_risk');
+        expect(plan.visual.image_prompt).toContain('abstract brand-color patches');
+    });
+
+    it('does not corrupt Russian words that merely contain okov and keeps negative robot wording', () => {
+        const article = {
+            raw_title: 'Anthropic launches Claude Office Secretary',
+            raw_summary: 'The product organizes office workflows.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Claude Office Secretary controls workflows',
+                caption_ru: 'Anthropic announced an office workflow assistant.',
+                hashtags: '#Anthropic #Claude',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Workers are pulled through a swirling portal of digital schedules and paper workflow streams. No readable text, logos, watermarks, or robots.',
+                angle: 'workflow-productivity'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).toContain('workflow streams');
+        expect(JSON.stringify(plan)).not.toMatch(/потбумажных|paper workflow бумажных/i);
+        expect(plan.visual.image_prompt).toContain('or robots');
+        expect(plan.visual.image_prompt).not.toContain('or engineers and officials');
+    });
+
+    it('sanitizes branding, logos, banners, charts, and labeled-with visual props', () => {
+        const article = {
+            raw_title: 'Meta releases Muse Spark and claims top benchmark results',
+            raw_summary: 'Meta published benchmark comparisons.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Meta wins benchmarks with Muse Spark',
+                caption_ru: 'Meta published benchmark comparisons.',
+                hashtags: '#Meta #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Runners wear glowing logos of their AI models under finish-line banners bearing model names like Muse Spark with subtle Meta branding while reporters hold benchmark charts near a door labeled with tangled calendars, displaying AI model logos and Meta logo subtly illuminated in a logo-and-generated-background style.',
+                angle: 'benchmark-model-launch'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).not.toMatch(/logos of|AI model logos|Meta logo|logo-and-generated-background|banner|branding|benchmark charts|labeled with|bearing model names|model names like/i);
+        expect(plan.visual.image_prompt).toMatch(/abstract brand-color patches|blank finish-line arch|brand-color lighting|blank chart-like benchmark props|shown through visual symbolism|brand-overlay-ready background style/i);
+    });
+
+    it('returns clean template-ready headline text without markdown markers', () => {
+        const article = {
+            raw_title: 'OpenAI gives developers 1 million free tokens',
+            raw_summary: 'OpenAI announced a developer credit program.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: '**OPENAI ДАРИТ МИЛЛИОН ТОКЕНОВ** НОВЫМ РАЗРАБОТЧИКАМ API!',
+                caption_ru: 'OpenAI announced a developer credit program.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman hands blank coupon props to developers in a realistic event hall.',
+                angle: 'editorial-satire'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.copy.headline_ru).toBe('OPENAI ДАРИТ МИЛЛИОН ТОКЕНОВ НОВЫМ РАЗРАБОТЧИКАМ API');
+        expect(plan.copy.headline_ru).not.toMatch(/\*\*|!|[`_#~]/);
+    });
+
+    it('removes hand-restraint phrasing from Russian headlines', () => {
+        const article = {
+            raw_title: 'Anthropic launches Claude Office Secretary',
+            raw_summary: 'Claude organizes office workflows.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Anthropic запустил Claude Office Secretary и связал офисные хаосы по рукам',
+                caption_ru: 'Claude organizes office workflows.',
+                hashtags: '#Anthropic #Claude',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Dario Amodei conducts a chaotic office with blank planner props.',
+                angle: 'workflow-productivity'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.copy.headline_ru).not.toMatch(/СВЯЗАЛ|ПО РУКАМ/i);
+        expect(plan.copy.headline_ru).toContain('ЗАПУТАЛИ ОФИС В БЮРОКРАТИИ');
+    });
+
+    it('does not corrupt apostrophes in English image prompts', () => {
+        const article = {
+            raw_title: 'Meta releases Muse Spark benchmark results',
+            raw_summary: 'Meta published benchmark comparisons.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Meta ставит рекорд с Muse Spark',
+                caption_ru: 'Meta published benchmark comparisons.',
+                hashtags: '#Meta #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: "Mark Zuckerberg enters the CEO's racing lane while a founder's trophy sits beside blank benchmark props.",
+                angle: 'benchmark-model-launch'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).toContain("CEO's racing lane");
+        expect(plan.visual.image_prompt).toContain("founder's trophy");
+        expect(plan.visual.image_prompt).not.toMatch(/modelblanks|CEOblank|founderblank/i);
+    });
 });
 
 describe('content plan prompt', () => {
@@ -493,6 +778,7 @@ describe('content plan prompt', () => {
         expect(prompt).toContain('Fallback plan for emergency safety only');
         expect(prompt).toContain('Article-specific rejected cliches');
         expect(prompt).toContain('hard-ban rockets');
-        expect(prompt).toContain('Do not put real public figures in dog collars');
+        expect(prompt).toContain('Do not put real public figures or office workers in dog collars');
+        expect(prompt).toContain('do not make gendered/degrading jokes about secretaries');
     });
 });
