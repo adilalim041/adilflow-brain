@@ -385,6 +385,71 @@ describe('content plan fallback', () => {
 
         expect(plan.creative_director.quality_flags).toContain('obvious_metaphor_risk');
     });
+
+    it('sanitizes degrading pet restraint metaphors for public figures', () => {
+        const article = {
+            raw_title: 'Inside the deadlock keeping Mythos offline',
+            raw_summary: 'Anthropic and the U.S. government remain stuck over export restrictions.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'Dario Amodei with Mythos blocked by US officials',
+                caption_ru: 'Anthropic remains stuck with the U.S. government.',
+                hashtags: '#Anthropic #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Premium realistic scene showing Dario Amodei wearing a dog collar connected to a short chain held by a guard near briefcases labeled Mythos and Fable.',
+                angle: 'government-pressure'
+            },
+            creative_director: {
+                human_conflict: 'Dario Amodei is held on a short chain by officials.',
+                selected_concept: 'Dario Amodei на коротком поводке',
+                rejected_obvious_metaphor: 'static founder portrait',
+                concepts: [
+                    {
+                        name: 'Dario Amodei на коротком поводке',
+                        visual_style: 'press photo',
+                        scene_context: 'government hallway',
+                        satirical_action: 'Dario Amodei wearing a dog collar connected to a short chain',
+                        why_location_fits: 'government-pressure story',
+                        why_it_works: 'shows blocked access',
+                        risk: 'degrading',
+                        thumbnail_score: 8
+                    },
+                    {
+                        name: 'Guard blocks access',
+                        visual_style: 'security camera',
+                        scene_context: 'checkpoint',
+                        satirical_action: 'guard blocks Dario Amodei at a locked turnstile',
+                        why_location_fits: 'access restriction',
+                        why_it_works: 'clear power mechanic',
+                        risk: 'safe',
+                        thumbnail_score: 8
+                    },
+                    {
+                        name: 'Locked briefcases',
+                        visual_style: 'press photo',
+                        scene_context: 'corridor',
+                        satirical_action: 'Dario reaches for locked briefcases',
+                        why_location_fits: 'models offline',
+                        why_it_works: 'visualizes blocked access',
+                        risk: 'safe',
+                        thumbnail_score: 7
+                    }
+                ],
+                selection_reason: 'strong image'
+            }
+        }, article, brief, fallback);
+
+        const text = JSON.stringify(plan);
+        expect(text).not.toMatch(/dog collar|short chain|leash|labeled Mythos|ошейник|поводке/i);
+        expect(plan.visual.image_prompt).toMatch(/restricted-access badge|security tether|wrist tether|turnstile/i);
+        expect(plan.visual.image_prompt).not.toMatch(/labeled/i);
+    });
 });
 
 describe('content plan prompt', () => {
@@ -428,5 +493,6 @@ describe('content plan prompt', () => {
         expect(prompt).toContain('Fallback plan for emergency safety only');
         expect(prompt).toContain('Article-specific rejected cliches');
         expect(prompt).toContain('hard-ban rockets');
+        expect(prompt).toContain('Do not put real public figures in dog collars');
     });
 });
