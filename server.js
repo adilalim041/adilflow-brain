@@ -1071,6 +1071,7 @@ async function classifyAndBriefWithGPT(article, nicheConfig) {
 async function generateContentPlanWithGPT(article, brief, nicheConfig) {
     const fallbackPlan = buildFallbackContentPlan(article, brief);
     const apiKey = process.env.OPENAI_API_KEY;
+    const contentPlanModel = process.env.CONTENT_PLAN_MODEL || 'gpt-4.1-mini';
     if (!apiKey) return fallbackPlan;
 
     if (openaiBreaker.state === 'OPEN' && Date.now() < openaiBreaker.nextAttempt) {
@@ -1090,7 +1091,7 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    model: 'gpt-4o-mini',
+                    model: contentPlanModel,
                     messages: [{ role: 'user', content: prompt }],
                     response_format: { type: 'json_object' },
                     max_tokens: 2400,
@@ -1115,15 +1116,23 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
 
         const text = data.choices?.[0]?.message?.content?.trim() || '';
         let contentPlan = normalizeContentPlan(text, article, brief, fallbackPlan);
-        const qualityFlags = contentPlan.creative_director?.quality_flags || [];
-        const shouldRevise = qualityFlags.some(flag => [
+        const revisionFlagNames = [
             'too_few_concepts',
             'missing_human_conflict',
             'weak_satirical_mechanics',
-            'readable_text_risk'
-        ].includes(flag));
+            'readable_text_risk',
+            'headline_quality_risk',
+            'non_english_image_prompt',
+            'obvious_metaphor_risk',
+            'false_acquisition_risk'
+        ];
+        const needsRevision = (plan) => (plan.creative_director?.quality_flags || [])
+            .some(flag => revisionFlagNames.includes(flag));
 
-        if (shouldRevise) {
+        const allRevisionFlags = [];
+        for (let revisionAttempt = 1; revisionAttempt <= 2 && needsRevision(contentPlan); revisionAttempt += 1) {
+            const qualityFlags = contentPlan.creative_director?.quality_flags || [];
+            allRevisionFlags.push({ attempt: revisionAttempt, flags: qualityFlags });
             const revisionPrompt = `${prompt}
 
 QUALITY GATE FAILED.
@@ -1140,11 +1149,18 @@ Hard requirements:
 - Do not use robots, generic data streams, or static portraits.
 - visual.image_prompt must be written in English only.
 - Keep product/model/person/company names exactly as article_brief states them.
+- Headline must be clear native Russian: no rare invented verbs, broken wordplay, or machine-translated phrases.
+- Do not turn "joins", "uses", "integrates", "adds", or "partners with" into "buys/acquires" unless the source explicitly says acquisition or purchase.
 - Make the satire obvious in 2 seconds: visible power mechanic, embarrassment, restraint, status reversal, or someone holding control.
 - Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.
+- Do not use the first obvious metaphor; push one level harder into an awkward, humiliating, or funny physical power scene.
+- Fill creative_director.rejected_obvious_metaphor with the cliche you rejected, then choose a different concept. SpaceX + Cursor is not "Elon rides a rocket made of code"; body scanner is not "a customer gets scanned in a spa"; AI credits are not "people at a casino table".
+- The rejected cliche must disappear from every concept and from image_prompt, including background props. If the rejected cliche uses a rocket/code rocket, no concept may still use a code rocket.
+- Never use cartoonish/comic/illustrated style. Keep it realistic reportage or premium editorial photo.
+- Do not copy fallback storyboard props. Benchmark boards only belong to benchmark/model-evaluation stories.
 - Keep the real agency of the story.`;
 
-            logger.warn({ provider: 'openai', articleId: article.id, flags: qualityFlags }, 'GPT content plan quality gate retry');
+            logger.warn({ provider: 'openai', articleId: article.id, flags: qualityFlags, revisionAttempt }, 'GPT content plan quality gate retry');
 
             const revisionData = await openaiBreaker.exec(() => pRetry(async () => {
                 const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -1154,7 +1170,7 @@ Hard requirements:
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        model: 'gpt-4o-mini',
+                        model: contentPlanModel,
                         messages: [{ role: 'user', content: revisionPrompt }],
                         response_format: { type: 'json_object' },
                         max_tokens: 2400,
@@ -1182,7 +1198,7 @@ Hard requirements:
             revisedPlan.creative_director = revisedPlan.creative_director || {};
             revisedPlan.creative_director.revision = {
                 attempted: true,
-                previous_flags: qualityFlags,
+                attempts: allRevisionFlags,
                 remaining_flags: revisedPlan.creative_director.quality_flags || []
             };
             contentPlan = revisedPlan;
@@ -1194,7 +1210,7 @@ Hard requirements:
             article_id: article.id,
             kind: 'copy',
             provider: 'openai',
-            model: 'gpt-4o-mini',
+            model: contentPlanModel,
             prompt: { system: null, user: prompt },
             response: contentPlan,
             outcome: 'ok',
@@ -1210,7 +1226,7 @@ Hard requirements:
             article_id: article.id,
             kind: 'copy',
             provider: 'openai',
-            model: 'gpt-4o-mini',
+            model: contentPlanModel,
             prompt: { system: null, user: prompt },
             response: null,
             outcome: 'fallback',
