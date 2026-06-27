@@ -808,6 +808,31 @@ describe('content plan fallback', () => {
         expect(plan.creative_director.quality_flags).toContain('obvious_metaphor_risk');
     });
 
+    it('does not let AI models become robot figurines in image prompts', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ЗАКРЫВАЕТ МОДЕЛЬ В СИМУЛЯЦИОННОЙ КАМЕРЕ',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman locks an oversized AI model figurine inside a transparent test chamber.',
+                angle: 'workflow-productivity'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).toContain('abstract sealed model container');
+        expect(plan.visual.image_prompt).not.toMatch(/model figurine|robot|humanoid|mascot/i);
+    });
+
     it('flags dry press-release headlines for revision', () => {
         const article = {
             raw_title: 'Introducing LifeSciBench',
