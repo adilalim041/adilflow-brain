@@ -117,6 +117,36 @@ describe('article brief normalization', () => {
         expect(brief.entities.opposing_actor).toBeNull();
         expect(brief.story_logic.risk_of_misread).toContain('Do not invent');
     });
+
+    it('restores known public figure and required assets when LLM identifies a known company', () => {
+        const article = {
+            raw_title: 'Introducing LifeSciBench',
+            raw_summary: '',
+            url: 'https://openai.com/index/introducing-life-sci-bench'
+        };
+        const fallback = buildFallbackArticleBrief(article);
+        const brief = normalizeArticleBrief(JSON.stringify({
+            source: 'llm',
+            suitability: { score: 8, is_suitable: true },
+            segmentation: { angle: 'benchmark-model-launch', mood: 'competitive' },
+            entities: {
+                main_company: 'OpenAI',
+                main_people: [],
+                products: ['LifeSciBench'],
+                protected_terms: ['LifeSciBench']
+            },
+            assets_required: {
+                needs_company_logo: false,
+                needs_person_reference: false,
+                needs_generated_background: true
+            }
+        }), article, fallback);
+
+        expect(brief.entities.main_company).toBe('OpenAI');
+        expect(brief.entities.main_people).toContain('Sam Altman');
+        expect(brief.assets_required.needs_company_logo).toBe(true);
+        expect(brief.assets_required.needs_person_reference).toBe(true);
+    });
 });
 
 describe('article brief prompt', () => {

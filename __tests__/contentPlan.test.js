@@ -735,6 +735,116 @@ describe('content plan fallback', () => {
         expect(plan.visual.image_prompt).toContain("founder's trophy");
         expect(plan.visual.image_prompt).not.toMatch(/modelblanks|CEOblank|founderblank/i);
     });
+
+    it('sanitizes Russian text-label risks and exam paper props in benchmark scenes', () => {
+        const article = {
+            raw_title: 'Introducing LifeSciBench',
+            raw_summary: 'OpenAI introduced a benchmark for life sciences.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ЗАСТАВЛЯЕТ ИИ СДАВАТЬ ЭКЗАМЕН ПО ЖИЗНИ С LIFESCIBENCH',
+                caption_ru: 'OpenAI introduced a benchmark for life sciences.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman unveils a giant exam paper while researchers close a case с надписью LifeSciBench.',
+                angle: 'benchmark-model-launch'
+            },
+            creative_director: {
+                human_conflict: 'Researchers judge models.',
+                concepts: [
+                    { name: 'exam', visual_style: 'phone flash', scene_context: 'lab exam room', satirical_action: 'Sam Altman unveils a giant test sheet', why_location_fits: 'benchmark story', why_it_works: 'public test', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'case', visual_style: 'press photo', scene_context: 'lab', satirical_action: 'researchers close a case с надписью LifeSciBench', why_location_fits: 'benchmark story', why_it_works: 'evaluation becomes physical', risk: 'label risk', thumbnail_score: 7 },
+                    { name: 'inspection', visual_style: 'security camera', scene_context: 'lab hallway', satirical_action: 'scientists run a surprise inspection', why_location_fits: 'benchmark story', why_it_works: 'clear', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'exam',
+                rejected_obvious_metaphor: 'chart',
+                selection_reason: 'clear'
+            }
+        }, article, brief, fallback);
+
+        expect(JSON.stringify(plan)).not.toMatch(/надпись|LifeSciBench\./i);
+        expect(plan.visual.image_prompt).toContain('blank oversized exam-sheet prop');
+        expect(plan.creative_director.quality_flags).not.toContain('readable_text_risk');
+    });
+
+    it('flags benchmark vault cliches for revision', () => {
+        const article = {
+            raw_title: 'Introducing LifeSciBench benchmark',
+            raw_summary: 'OpenAI introduced a benchmark for life sciences.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ЗАСТАВЛЯЕТ ИИ СДАВАТЬ ЭКЗАМЕН ПО ЖИЗНИ С LIFESCIBENCH',
+                caption_ru: 'OpenAI introduced a benchmark for life sciences.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman locks a giant benchmark vault while scientists watch.',
+                angle: 'benchmark-model-launch'
+            },
+            creative_director: {
+                human_conflict: 'Scientists judge models.',
+                concepts: [
+                    { name: 'vault', visual_style: 'phone flash', scene_context: 'lab', satirical_action: 'Sam Altman locks a benchmark vault', why_location_fits: 'benchmark story', why_it_works: 'control', risk: 'cliche', thumbnail_score: 8 },
+                    { name: 'exam', visual_style: 'press photo', scene_context: 'exam room', satirical_action: 'researchers grade blank lab props', why_location_fits: 'benchmark story', why_it_works: 'test', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'inspection', visual_style: 'security camera', scene_context: 'lab hallway', satirical_action: 'scientists run surprise inspection', why_location_fits: 'benchmark story', why_it_works: 'clear', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'vault',
+                rejected_obvious_metaphor: 'chart',
+                selection_reason: 'clear'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('obvious_metaphor_risk');
+    });
+
+    it('flags dry press-release headlines for revision', () => {
+        const article = {
+            raw_title: 'Introducing LifeSciBench',
+            raw_summary: 'OpenAI introduced a benchmark for life sciences.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        brief.entities.main_company = 'OpenAI';
+        brief.entities.main_people = ['Sam Altman'];
+        brief.assets_required.needs_person_reference = true;
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ПРЕДСТАВИЛА LIFESCIBENCH ДЛЯ ОЦЕНКИ AI В НАУКЕ',
+                caption_ru: 'OpenAI introduced a benchmark for life sciences.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman watches scientists in a public exam room judge blank lab props.',
+                angle: 'benchmark-model-launch'
+            },
+            creative_director: {
+                human_conflict: 'Scientists judge models under pressure.',
+                concepts: [
+                    { name: 'exam', visual_style: 'phone flash', scene_context: 'lab exam room', satirical_action: 'Sam Altman watches scientists grade blank lab props', why_location_fits: 'benchmark story', why_it_works: 'public test', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'inspection', visual_style: 'press photo', scene_context: 'lab', satirical_action: 'researchers run a surprise inspection', why_location_fits: 'life science benchmark', why_it_works: 'evaluation becomes physical', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'doctor table', visual_style: 'leaked flash photo', scene_context: 'clinic lab', satirical_action: 'a model is checked on an exam table', why_location_fits: 'life science test', why_it_works: 'clear evaluation', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'exam',
+                rejected_obvious_metaphor: 'chart',
+                selection_reason: 'clear'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('headline_quality_risk');
+    });
 });
 
 describe('content plan prompt', () => {
@@ -780,5 +890,7 @@ describe('content plan prompt', () => {
         expect(prompt).toContain('hard-ban rockets');
         expect(prompt).toContain('Do not put real public figures or office workers in dog collars');
         expect(prompt).toContain('do not make gendered/degrading jokes about secretaries');
+        expect(prompt).toContain('Benchmark/evaluation articles');
+        expect(prompt).toContain('public exam');
     });
 });
