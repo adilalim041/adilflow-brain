@@ -866,6 +866,43 @@ describe('content plan fallback', () => {
         }, article, brief, fallback);
 
         expect(plan.creative_director.quality_flags).toContain('static_demo_scene_risk');
+        expect(plan.creative_director.quality_flags).toContain('banned_deployment_chamber_risk');
+    });
+
+    it('rejects deployment-simulation chamber scenes even when they have flash and panic', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ЗАПЕР SAM ALTMAN В ИСПЫТАТЕЛЬНОЙ КАМЕРЕ AI',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Harsh-flash tabloid reportage cover showing Sam Altman locked inside a transparent high-tech test chamber for AI trials, surrounded by tense industry experts trying to reach him but blocked by a security cordon, with flashing cameras and panicked expressions.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Sam is trapped while experts panic.',
+                concepts: [
+                    { name: 'test chamber', visual_style: 'harsh flash', scene_context: 'lab hallway', satirical_action: 'Sam Altman is locked inside a transparent high-tech test chamber', why_location_fits: 'deployment simulation', why_it_works: 'shows testing', risk: 'false agency', thumbnail_score: 7 },
+                    { name: 'security cordon', visual_style: 'paparazzi flash', scene_context: 'test room', satirical_action: 'experts are blocked by security near the chamber', why_location_fits: 'pre-release testing', why_it_works: 'blocked access', risk: 'chamber', thumbnail_score: 7 },
+                    { name: 'panic', visual_style: 'phone photo', scene_context: 'lab', satirical_action: 'people panic around the transparent chamber', why_location_fits: 'simulation story', why_it_works: 'public chaos', risk: 'chamber', thumbnail_score: 7 }
+                ],
+                selected_concept: 'Sam Altman в испытательной камере',
+                rejected_obvious_metaphor: 'simulation chamber',
+                selection_reason: 'dramatic'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('banned_deployment_chamber_risk');
+        expect(plan.creative_director.quality_flags).toContain('headline_quality_risk');
     });
 
     it('does not flag Russian power-mechanic concepts as static demo scenes', () => {
