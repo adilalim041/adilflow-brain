@@ -1278,4 +1278,39 @@ describe('content plan prompt', () => {
         expect(plan.creative_director.quality_flags).toContain('headline_quality_risk');
         expect(plan.creative_director.quality_flags).toContain('unsupported_competitor_risk');
     });
+
+    it('normalizes AI and crash-test spelling in Russian headlines', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI заставляет AI пройти крэш-тест',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Harsh-flash phone photo of a pre-release crash-test track for a black-box AI server unit.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'OpenAI stress-tests models before release.',
+                concepts: [
+                    { name: 'crash-test', visual_style: 'harsh-flash phone photo', scene_context: 'lab test track', satirical_action: 'a black-box model unit slams through a crash-test obstacle course', why_location_fits: 'deployment simulation before release', why_it_works: 'clear test metaphor', risk: 'safe', thumbnail_score: 9 },
+                    { name: 'inspection', visual_style: 'security camera screenshot', scene_context: 'inspection bay', satirical_action: 'auditors run a pre-release inspection', why_location_fits: 'predicting failures', why_it_works: 'clear safety check', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'red-team drill', visual_style: 'paparazzi flash', scene_context: 'fake deployment drill', satirical_action: 'engineers panic during a failure drill', why_location_fits: 'deployment simulation', why_it_works: 'clear rehearsal', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'crash-test',
+                rejected_obvious_metaphor: 'simulation chamber',
+                selection_reason: 'clear'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.copy.headline_ru).toBe('OPENAI ЗАСТАВЛЯЕТ ИИ ПРОЙТИ КРАШ-ТЕСТ');
+    });
 });
