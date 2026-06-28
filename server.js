@@ -1124,6 +1124,7 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
             'headline_quality_risk',
             'non_english_image_prompt',
             'obvious_metaphor_risk',
+            'static_demo_scene_risk',
             'false_acquisition_risk'
         ];
         const needsRevision = (plan) => (plan.creative_director?.quality_flags || [])
@@ -1152,6 +1153,7 @@ Hard requirements:
 - Headline must be clear native Russian: no rare invented verbs, broken wordplay, or machine-translated phrases.
 - Do not turn "joins", "uses", "integrates", "adds", or "partners with" into "buys/acquires" unless the source explicitly says acquisition or purchase.
 - Make the satire obvious in 2 seconds: visible power mechanic, embarrassment, restraint, status reversal, or someone holding control.
+- If the scene is just a founder presenting/unveiling a chamber, vault, booth, box, demo room, or conference-stage prop, reject it. Add a sharper public power mechanic: someone blocked, embarrassed, denied access, forced into a test, caught by harsh flash, held behind a velvet rope, or watching helplessly while another person controls the desired object.
 - Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.
 - Do not use the first obvious metaphor; push one level harder into an awkward, humiliating, or funny physical power scene.
 - Fill creative_director.rejected_obvious_metaphor with the cliche you rejected, then choose a different concept. SpaceX + Cursor is not "Elon rides a rocket made of code"; body scanner is not "a customer gets scanned in a spa"; AI credits are not "people at a casino table".
@@ -2174,6 +2176,83 @@ app.post('/api/articles/:id/classify-one', authMiddleware, async (req, res) => {
 
     } catch (e) {
         logger.error({ err: e, articleId: req.params.id }, 'classify-one failed');
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Rebuild only the creative content_plan for an already classified/generated article.
+// Useful after prompt/quality-gate changes; does not publish or touch parser state.
+app.post('/api/articles/:id/replan', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data: article, error: loadError } = await supabase
+            .from('articles')
+            .select('id, url, raw_title, raw_text, raw_summary, top_image, source_name, source_domain, published_at, parsed_at, niche, status, scores_detail')
+            .eq('id', id)
+            .single();
+
+        if (loadError) {
+            if (loadError.code === 'PGRST116') {
+                return res.status(404).json({ error: 'Article not found' });
+            }
+            throw loadError;
+        }
+
+        const allowed = new Set(['classified', 'ready', 'publish_failed', 'processing']);
+        if (!allowed.has(article.status)) {
+            return res.status(409).json({
+                error: 'article_not_eligible_for_replan',
+                status: article.status,
+                expected: Array.from(allowed)
+            });
+        }
+
+        const { data: nicheConfig } = await supabase
+            .from('niches')
+            .select('gpt_system_prompt, language')
+            .eq('id', article.niche)
+            .single();
+
+        const fallbackBrief = buildFallbackArticleBrief(article);
+        const brief = article.scores_detail?.article_brief || fallbackBrief;
+        const contentPlan = await generateContentPlanWithGPT(article, brief, nicheConfig);
+
+        const updatePayload = {
+            scores_detail: mergeScoreDetails(article.scores_detail, {
+                content_plan: contentPlan,
+                replanned_at: new Date().toISOString()
+            }),
+            updated_at: new Date().toISOString()
+        };
+        if (req.body?.reset_status === true && article.status !== 'classified') {
+            updatePayload.status = 'classified';
+        }
+
+        const { error: updateError } = await supabase
+            .from('articles')
+            .update(updatePayload)
+            .eq('id', id);
+
+        if (updateError) throw updateError;
+
+        logger.info({
+            articleId: id,
+            status: updatePayload.status || article.status,
+            flags: contentPlan.creative_director?.quality_flags || []
+        }, 'Article content plan replanned');
+
+        res.json({
+            success: true,
+            article_id: id,
+            status: updatePayload.status || article.status,
+            headline: contentPlan.copy?.headline_ru || null,
+            quality_flags: contentPlan.creative_director?.quality_flags || [],
+            selected_concept: contentPlan.creative_director?.selected_concept || null,
+            image_prompt: contentPlan.visual?.image_prompt || null
+        });
+    } catch (e) {
+        logger.error({ err: e, articleId: req.params.id }, 'replan failed');
         res.status(500).json({ error: e.message });
     }
 });

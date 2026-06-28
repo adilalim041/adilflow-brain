@@ -833,6 +833,41 @@ describe('content plan fallback', () => {
         expect(plan.visual.image_prompt).not.toMatch(/model figurine|robot|humanoid|mascot/i);
     });
 
+    it('flags static demo chambers as too weak for satire revision', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ЗАКРЫВАЕТ МОДЕЛЬ В СИМУЛЯЦИОННОЙ КАМЕРЕ',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman unveils a large futuristic simulation chamber resembling a high-tech quarantine booth while industry experts watch anxiously around a transparent box.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Experts watch a contained model.',
+                concepts: [
+                    { name: 'chamber', visual_style: 'press photo', scene_context: 'conference hall', satirical_action: 'Sam Altman unveils a simulation chamber', why_location_fits: 'OpenAI demo', why_it_works: 'shows control', risk: 'static', thumbnail_score: 7 },
+                    { name: 'box', visual_style: 'premium editorial', scene_context: 'demo room', satirical_action: 'experts watch anxiously near a transparent box', why_location_fits: 'simulation story', why_it_works: 'shows containment', risk: 'static', thumbnail_score: 7 },
+                    { name: 'booth', visual_style: 'press photographer shot', scene_context: 'conference hall', satirical_action: 'Sam stands beside a quarantine booth', why_location_fits: 'release simulation', why_it_works: 'shows safety', risk: 'static', thumbnail_score: 7 }
+                ],
+                selected_concept: 'chamber',
+                rejected_obvious_metaphor: 'robot in a box',
+                selection_reason: 'clear'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('static_demo_scene_risk');
+    });
+
     it('flags dry press-release headlines for revision', () => {
         const article = {
             raw_title: 'Introducing LifeSciBench',
