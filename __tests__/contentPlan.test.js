@@ -917,6 +917,31 @@ describe('content plan fallback', () => {
         expect(prompt).toContain('launch-party bouncer');
     });
 
+    it('removes generic data streams from image prompts', () => {
+        const article = {
+            raw_title: 'OpenAI model update',
+            raw_summary: 'OpenAI updates an AI model.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ДЕРЖИТ ДОСТУП ПОД ЗАМКОМ',
+                caption_ru: 'OpenAI updates an AI model.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman blocks access while complex data streams glow inside the room.',
+                angle: 'editorial-satire'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).toContain('subtle practical lab lighting');
+        expect(plan.visual.image_prompt).not.toMatch(/data streams/i);
+    });
+
     it('flags dry press-release headlines for revision', () => {
         const article = {
             raw_title: 'Introducing LifeSciBench',
