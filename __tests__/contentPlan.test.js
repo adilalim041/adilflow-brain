@@ -868,6 +868,55 @@ describe('content plan fallback', () => {
         expect(plan.creative_director.quality_flags).toContain('static_demo_scene_risk');
     });
 
+    it('flags abstract metaphor explanations instead of physical situations', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ПРОВЕРЯЕТ ИИ ДО РЕЛИЗА',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman holds a remote control, symbolizing control over Deployment Simulation.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Simulation symbolizes control.',
+                concepts: [
+                    { name: 'remote', visual_style: 'phone flash', scene_context: 'lab hallway', satirical_action: 'Sam holds a remote control representing model control', why_location_fits: 'simulation story', why_it_works: 'symbolizes control', risk: 'abstract', thumbnail_score: 7 },
+                    { name: 'badge', visual_style: 'press photo', scene_context: 'office gate', satirical_action: 'Sam blocks a badge gate', why_location_fits: 'release control', why_it_works: 'clear', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'line', visual_style: 'security camera', scene_context: 'launch hallway', satirical_action: 'engineers wait behind a velvet rope', why_location_fits: 'pre-release gate', why_it_works: 'clear', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'remote',
+                rejected_obvious_metaphor: 'transparent box',
+                selection_reason: 'symbolizes control'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('abstract_explanation_risk');
+    });
+
+    it('adds article-specific bans for deployment simulation cliches', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const prompt = buildContentPlanPrompt(article, brief, { gpt_system_prompt: 'AI news' }, fallback);
+
+        expect(prompt).toContain('Deployment simulation / pre-release behavior stories');
+        expect(prompt).toContain('hard-ban simulation chambers');
+        expect(prompt).toContain('launch-party bouncer');
+    });
+
     it('flags dry press-release headlines for revision', () => {
         const article = {
             raw_title: 'Introducing LifeSciBench',

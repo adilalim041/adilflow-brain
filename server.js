@@ -1125,6 +1125,7 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
             'non_english_image_prompt',
             'obvious_metaphor_risk',
             'static_demo_scene_risk',
+            'abstract_explanation_risk',
             'false_acquisition_risk'
         ];
         const needsRevision = (plan) => (plan.creative_director?.quality_flags || [])
@@ -1154,6 +1155,7 @@ Hard requirements:
 - Do not turn "joins", "uses", "integrates", "adds", or "partners with" into "buys/acquires" unless the source explicitly says acquisition or purchase.
 - Make the satire obvious in 2 seconds: visible power mechanic, embarrassment, restraint, status reversal, or someone holding control.
 - If the scene is just a founder presenting/unveiling a chamber, vault, booth, box, demo room, or conference-stage prop, reject it. Add a sharper public power mechanic: someone blocked, embarrassed, denied access, forced into a test, caught by harsh flash, held behind a velvet rope, or watching helplessly while another person controls the desired object.
+- Do not explain the metaphor with "representing", "symbolizes", "highlighting", or "stands for". If the prompt needs those words, rewrite it as a physical situation that is obvious without explanation.
 - Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.
 - Do not use the first obvious metaphor; push one level harder into an awkward, humiliating, or funny physical power scene.
 - Fill creative_director.rejected_obvious_metaphor with the cliche you rejected, then choose a different concept. SpaceX + Cursor is not "Elon rides a rocket made of code"; body scanner is not "a customer gets scanned in a spa"; AI credits are not "people at a casino table".
