@@ -1128,7 +1128,8 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
             'static_demo_scene_risk',
             'abstract_explanation_risk',
             'weak_ragebait_visual_risk',
-            'false_acquisition_risk'
+            'false_acquisition_risk',
+            'unsupported_competitor_risk'
         ];
         const needsRevision = (plan) => (plan.creative_director?.quality_flags || [])
             .some(flag => revisionFlagNames.includes(flag));
@@ -1155,6 +1156,7 @@ Hard requirements:
 - Keep product/model/person/company names exactly as article_brief states them.
 - Headline must be clear native Russian: no rare invented verbs, broken wordplay, or machine-translated phrases.
 - Do not turn "joins", "uses", "integrates", "adds", or "partners with" into "buys/acquires" unless the source explicitly says acquisition or purchase.
+- Do not add competitors/rivals as the main victims unless the source article or article_brief explicitly mentions competition/rivals. If the article is about internal testing, make the models, release gate, test process, engineers, reviewers, or executives the target instead.
 - Make the satire obvious in 2 seconds: visible power mechanic, embarrassment, restraint, status reversal, or someone holding control.
 - Make the visual feel like tabloid/ragebait reportage, not a respectable tech illustration: harsh flash, leaked phone photo, paparazzi/press scrum, security-camera screenshot, messy public awkwardness, or dirty backstage frame.
 - If the prompt uses "premium", "natural lighting", "clean negative space", "futuristic runway", "high-tech server room", or a polished founder portrait, rewrite it into a messier conflict scene with people reacting.

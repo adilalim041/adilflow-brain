@@ -1238,5 +1238,42 @@ describe('content plan prompt', () => {
         }, article, brief, fallback);
 
         expect(plan.creative_director.quality_flags).not.toContain('weak_ragebait_visual_risk');
+        expect(plan.creative_director.quality_flags).not.toContain('banned_deployment_chamber_risk');
+    });
+
+    it('flags unsupported competitor inventions in deployment-simulation stories', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'SAM ALTMAN ЗАКРЫВАЕТ КОНКУРЕНТОВ В КЛЕТКУ DEPLOYMENT SIMULATION',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Harsh-flash tabloid reportage cover showing Sam Altman as a stern bouncer locking a cage door while several AI competitors try to push inside desperately, with people sweating and scrambling behind velvet ropes and security guards.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Sam controls access while competitors panic.',
+                concepts: [
+                    { name: 'competitor cage', visual_style: 'harsh flash', scene_context: 'tech expo', satirical_action: 'Sam locks competitors behind a gate', why_location_fits: 'deployment story', why_it_works: 'control', risk: 'invented rivals', thumbnail_score: 7 },
+                    { name: 'security', visual_style: 'paparazzi flash', scene_context: 'launch corridor', satirical_action: 'security blocks competitors', why_location_fits: 'release access', why_it_works: 'blocked access', risk: 'invented rivals', thumbnail_score: 7 },
+                    { name: 'scramble', visual_style: 'phone photo', scene_context: 'backstage', satirical_action: 'competitors scramble behind ropes', why_location_fits: 'deployment', why_it_works: 'panic', risk: 'invented rivals', thumbnail_score: 7 }
+                ],
+                selected_concept: 'competitor cage',
+                rejected_obvious_metaphor: 'simulation chamber',
+                selection_reason: 'dramatic'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('headline_quality_risk');
+        expect(plan.creative_director.quality_flags).toContain('unsupported_competitor_risk');
     });
 });
