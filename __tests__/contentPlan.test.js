@@ -43,7 +43,7 @@ describe('content plan fallback', () => {
                 cta_ru: 'Следи за ИИ'
             },
             visual: {
-                image_prompt: 'Sam Altman as a generous tech founder handing out glowing token coupons, photorealistic editorial satire, no text, no logos.',
+                image_prompt: 'Leaked harsh-flash phone photo of Sam Altman handing blank glowing token coupons to exhausted developers while rival executives watch helplessly behind a velvet rope, no text, no logos.',
                 angle: 'free-credit-giveaway'
             },
             creative_director: {
@@ -51,9 +51,9 @@ describe('content plan fallback', () => {
                 concepts: [
                     {
                         name: 'Coupon angel',
-                        visual_style: 'leaked flash photo',
+                        visual_style: 'leaked harsh-flash photo',
                         scene_context: 'developer meetup',
-                        satirical_action: 'Sam Altman handing glowing coupons to exhausted developers',
+                        satirical_action: 'Sam Altman handing glowing coupons to exhausted developers while rivals watch helplessly behind a velvet rope',
                         why_location_fits: 'The news is about developers receiving credits.',
                         why_it_works: 'The giveaway becomes instantly visible.',
                         risk: 'Keep coupons unreadable.',
@@ -1096,5 +1096,110 @@ describe('content plan prompt', () => {
         expect(prompt).toContain('do not make gendered/degrading jokes about secretaries');
         expect(prompt).toContain('Benchmark/evaluation articles');
         expect(prompt).toContain('public exam');
+    });
+
+    it('flags weak dry deployment-simulation headlines', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ЗАПРЕТИЛА АЙТИШНИКАМ ПРОВАЛИТЬ ТЕСТ',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Leaked harsh-flash phone photo of Sam Altman blocking nervous engineers behind a velvet rope while security guards hold the crowd back.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Sam controls access while engineers panic.',
+                concepts: [
+                    { name: 'bouncer', visual_style: 'leaked harsh-flash photo', scene_context: 'lab hallway', satirical_action: 'Sam blocks nervous engineers behind a velvet rope', why_location_fits: 'deployment access story', why_it_works: 'visible access control', risk: 'safe', thumbnail_score: 9 },
+                    { name: 'security camera', visual_style: 'security camera screenshot', scene_context: 'test gate', satirical_action: 'guards hold back a crowd trying to enter', why_location_fits: 'pre-release testing', why_it_works: 'visible denial', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'press scrum', visual_style: 'paparazzi flash', scene_context: 'launch corridor', satirical_action: 'reporters catch executives sweating near a blocked gate', why_location_fits: 'release pressure', why_it_works: 'public embarrassment', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'bouncer',
+                rejected_obvious_metaphor: 'simulation chamber',
+                selection_reason: 'clear conflict'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('headline_quality_risk');
+    });
+
+    it('flags polished respectable visuals as weak ragebait', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'SAM ALTMAN ДЕРЖИТ РЕЛИЗ НА КОРОТКОМ ПОВОДКЕ',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Premium photorealistic editorial magazine cover with dramatic but natural light inside a high-tech server room, Sam Altman calmly standing beside a futuristic runway gate.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Sam controls access.',
+                concepts: [
+                    { name: 'polished gate', visual_style: 'premium editorial', scene_context: 'high-tech server room', satirical_action: 'Sam stands near a futuristic runway gate', why_location_fits: 'deployment story', why_it_works: 'control', risk: 'too clean', thumbnail_score: 7 },
+                    { name: 'clean room', visual_style: 'natural lighting', scene_context: 'modern tech conference', satirical_action: 'experts calmly watch the gate', why_location_fits: 'release story', why_it_works: 'calm control', risk: 'weak', thumbnail_score: 6 },
+                    { name: 'portrait', visual_style: 'polished editorial', scene_context: 'server room', satirical_action: 'Sam poses with a remote', why_location_fits: 'model release', why_it_works: 'founder visible', risk: 'portrait', thumbnail_score: 6 }
+                ],
+                selected_concept: 'polished gate',
+                rejected_obvious_metaphor: 'simulation chamber',
+                selection_reason: 'clean'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('weak_ragebait_visual_risk');
+    });
+
+    it('accepts messy flash-reportage visuals with clear public conflict', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'SAM ALTMAN НЕ ПУСКАЕТ МОДЕЛИ НА РЕЛИЗ БЕЗ ОБЫСКА',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Leaked harsh-flash phone photo of Sam Altman acting as a launch-party bouncer, blocking sweating AI engineers behind a velvet rope while security guards hold back a noisy crowd at a lab hallway gate.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Sam controls release access while engineers panic publicly.',
+                concepts: [
+                    { name: 'bouncer', visual_style: 'leaked harsh-flash phone photo', scene_context: 'lab hallway gate', satirical_action: 'Sam blocks sweating engineers behind a velvet rope', why_location_fits: 'deployment release gate', why_it_works: 'visible access denial', risk: 'safe', thumbnail_score: 9 },
+                    { name: 'camera catch', visual_style: 'security camera screenshot', scene_context: 'test entrance', satirical_action: 'guards hold back a crowd trying to enter', why_location_fits: 'pre-release testing', why_it_works: 'public blockage', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'press scrum', visual_style: 'paparazzi flash', scene_context: 'launch corridor', satirical_action: 'reporters catch executives sweating while Sam keeps the gate closed', why_location_fits: 'release pressure', why_it_works: 'embarrassment is visible', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'bouncer',
+                rejected_obvious_metaphor: 'simulation chamber',
+                selection_reason: 'fastest conflict'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).not.toContain('weak_ragebait_visual_risk');
     });
 });

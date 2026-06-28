@@ -1126,6 +1126,7 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
             'obvious_metaphor_risk',
             'static_demo_scene_risk',
             'abstract_explanation_risk',
+            'weak_ragebait_visual_risk',
             'false_acquisition_risk'
         ];
         const needsRevision = (plan) => (plan.creative_director?.quality_flags || [])
@@ -1154,6 +1155,8 @@ Hard requirements:
 - Headline must be clear native Russian: no rare invented verbs, broken wordplay, or machine-translated phrases.
 - Do not turn "joins", "uses", "integrates", "adds", or "partners with" into "buys/acquires" unless the source explicitly says acquisition or purchase.
 - Make the satire obvious in 2 seconds: visible power mechanic, embarrassment, restraint, status reversal, or someone holding control.
+- Make the visual feel like tabloid/ragebait reportage, not a respectable tech illustration: harsh flash, leaked phone photo, paparazzi/press scrum, security-camera screenshot, messy public awkwardness, or dirty backstage frame.
+- If the prompt uses "premium", "natural lighting", "clean negative space", "futuristic runway", "high-tech server room", or a polished founder portrait, rewrite it into a messier conflict scene with people reacting.
 - If the scene is just a founder presenting/unveiling a chamber, vault, booth, box, demo room, or conference-stage prop, reject it. Add a sharper public power mechanic: someone blocked, embarrassed, denied access, forced into a test, caught by harsh flash, held behind a velvet rope, or watching helplessly while another person controls the desired object.
 - Do not explain the metaphor with "representing", "symbolizes", "highlighting", or "stands for". If the prompt needs those words, rewrite it as a physical situation that is obvious without explanation.
 - Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.
