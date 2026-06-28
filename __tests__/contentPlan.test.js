@@ -833,6 +833,47 @@ describe('content plan fallback', () => {
         expect(plan.visual.image_prompt).not.toMatch(/model figurine|robot|humanoid|mascot/i);
     });
 
+    it('allows Matrix-like simulation escape avatars for deployment simulation stories', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI introduces Deployment Simulation to predict model behavior before release.',
+            raw_text: 'OpenAI simulates deployment using real conversation data before releasing models.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI PUTS ITS MODEL INTO THE MATRIX',
+                caption_ru: 'OpenAI tests model behavior in simulated deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Leaked harsh-flash phone photo in a messy OpenAI lab: a symbolic AI avatar robot is tearing out of a Matrix-like virtual simulation grid while Sam Altman panics at a computer keyboard trying to keep the model inside the program before release; engineers shout in the background, no readable text, no logos, no watermarks.',
+                angle: 'deployment-simulation'
+            },
+            creative_director: {
+                human_conflict: 'Sam Altman panics as the model tries to escape the pre-release simulation.',
+                concepts: [
+                    { name: 'matrix escape', visual_style: 'leaked harsh-flash phone photo', scene_context: 'messy OpenAI lab', satirical_action: 'a symbolic AI avatar robot tears out of a Matrix-like virtual simulation grid while Sam Altman panics at a computer keyboard trying to keep it inside', why_location_fits: 'deployment simulation before release happens in a controlled test environment', why_it_works: 'the model trying to escape makes simulated deployment instantly visible', risk: 'safe if no readable code', thumbnail_score: 9 },
+                    { name: 'crash test', visual_style: 'phone reportage', scene_context: 'lab test track', satirical_action: 'a black-box model unit slams through a pre-release obstacle course while engineers panic', why_location_fits: 'deployment simulation is a stress test', why_it_works: 'physical testing is clear', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'emergency drill', visual_style: 'security camera screenshot', scene_context: 'fake deployment control room', satirical_action: 'engineers run an emergency drill around a model release console', why_location_fits: 'simulated deployment is a rehearsal', why_it_works: 'the rehearsal is visible', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'matrix escape',
+                rejected_obvious_metaphor: 'a static simulation chamber',
+                selection_reason: 'the model physically trying to escape the program explains simulated deployment faster than a generic chamber'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.visual.image_prompt).toMatch(/AI avatar robot|Matrix-like virtual simulation grid/i);
+        expect(plan.visual.image_prompt).not.toContain('abstract sealed model container');
+        expect(plan.visual.image_prompt).not.toContain('engineers and officials is tearing out');
+        expect(plan.creative_director.quality_flags).not.toContain('unclear_deployment_simulation_risk');
+        expect(plan.creative_director.quality_flags).not.toContain('founder_dominates_deployment_risk');
+        expect(plan.creative_director.quality_flags).not.toContain('static_demo_scene_risk');
+    });
+
     it('flags static demo chambers as too weak for satire revision', () => {
         const article = {
             raw_title: 'Predicting model behavior before release by simulating deployment',
@@ -1020,8 +1061,8 @@ describe('content plan fallback', () => {
         const prompt = buildContentPlanPrompt(article, brief, { gpt_system_prompt: 'AI news' }, fallback);
 
         expect(prompt).toContain('Deployment simulation / pre-release behavior stories');
-        expect(prompt).toContain('hard-ban simulation chambers');
-        expect(prompt).toContain('crash-test sled');
+        expect(prompt).toContain('Matrix-like virtual-simulation escape');
+        expect(prompt).toContain('visible crash-test / stress-test / safety inspection');
     });
 
     it('removes generic data streams from image prompts', () => {

@@ -1153,7 +1153,7 @@ Revise it now. Return ONLY the full corrected JSON.
 Hard requirements:
 - creative_director.concepts must contain 3-5 substantially different concepts.
 - No readable text, labels, signs, posters, banners, interface text, logos, watermarks, or brand marks in concepts or image_prompt.
-- Do not use robots, generic data streams, or static portraits.
+- Do not use generic robots, generic data streams, or static portraits. Exception: for deployment-simulation stories, a symbolic AI avatar/robot is allowed only when it is trying to escape a virtual simulation/program and humans are visibly trying to keep it contained before release.
 - visual.image_prompt must be written in English only.
 - Keep product/model/person/company names exactly as article_brief states them.
 - Headline must be clear native Russian: no rare invented verbs, broken wordplay, or machine-translated phrases.
@@ -1164,8 +1164,8 @@ Hard requirements:
 - Make the visual feel like tabloid/ragebait reportage, not a respectable tech illustration: harsh flash, leaked phone photo, paparazzi/press scrum, security-camera screenshot, messy public awkwardness, or dirty backstage frame.
 - If the prompt uses "premium", "natural lighting", "clean negative space", "futuristic runway", "high-tech server room", or a polished founder portrait, rewrite it into a messier conflict scene with people reacting.
 - For deployment-simulation / pre-release behavior stories, never use a simulation chamber, test chamber, transparent chamber, quarantine booth, transparent box, or a public figure locked inside a chamber.
-- For deployment-simulation / pre-release behavior stories, the visual must clearly read as pre-release crash-test, stress-test, safety inspection, red-team drill, emergency drill, or fake deployment disaster rehearsal. Do not use generic bouncers, red ropes, access cards, or "not letting AI through a gate" as the main idea unless an obvious crash-test/stress-test setup is also visible.
-- For deployment-simulation / pre-release behavior stories, the crash-test setup must be the central subject. Do not compose it as a founder portrait with a remote/clipboard. Put the black-box model/server unit, test rig, crash-test sled, obstacle course, or inspection table in the foreground/center; the public figure can stand to the side as inspector/controller.
+- For deployment-simulation / pre-release behavior stories, prefer a Matrix-like virtual-simulation escape scene: a symbolic AI avatar/model tries to break out of a simulated program while Sam Altman or engineers panic at computers trying to keep it inside before release. Do not copy exact movie characters, readable code, interface text, generated logos, or brand marks.
+- For deployment-simulation / pre-release behavior stories, a crash-test/stress-test/safety-inspection setup is acceptable only if it is more instantly understandable than the simulation-escape metaphor. Do not compose it as a founder portrait with a remote/clipboard; the model/test object or escaping avatar must drive the scene.
 - If the scene is just a founder presenting/unveiling a chamber, vault, booth, box, demo room, or conference-stage prop, reject it. Add a sharper public power mechanic: someone blocked, embarrassed, denied access, forced into a test, caught by harsh flash, held behind a velvet rope, or watching helplessly while another person controls the desired object.
 - Do not explain the metaphor with "representing", "symbolizes", "highlighting", or "stands for". If the prompt needs those words, rewrite it as a physical situation that is obvious without explanation.
 - Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.
