@@ -868,6 +868,41 @@ describe('content plan fallback', () => {
         expect(plan.creative_director.quality_flags).toContain('static_demo_scene_risk');
     });
 
+    it('does not flag Russian power-mechanic concepts as static demo scenes', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'SAM ALTMAN ЗАПИРАЕТ ДОСТУП К ИСПЫТАНИЯМ ИИ',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman in a corridor holds a giant key while security staff and velvet ropes block a crowd of experts trying to reach a locked door.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Sam Altman контролирует доступ, а толпа экспертов отчаянно пытается войти.',
+                concepts: [
+                    { name: 'ключ и красная лента', visual_style: 'жесткая вспышка', scene_context: 'коридор лаборатории', satirical_action: 'Altman держит ключ, охрана и красная лента блокируют толпу экспертов', why_location_fits: 'тесты ИИ', why_it_works: 'видно кто контролирует доступ', risk: 'safe', thumbnail_score: 9 },
+                    { name: 'турникет', visual_style: 'репортаж', scene_context: 'коридор', satirical_action: 'Altman нажимает пульт у турникета, люди паникуют', why_location_fits: 'доступ к тестам', why_it_works: 'ясная блокировка', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'очередь', visual_style: 'phone flash', scene_context: 'лаборатория', satirical_action: 'эксперты стоят в очереди за бархатной веревкой', why_location_fits: 'контроль релиза', why_it_works: 'социальное напряжение', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'ключ и красная лента',
+                rejected_obvious_metaphor: 'Altman unveiling a simulation chamber',
+                selection_reason: 'виден контроль доступа'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).not.toContain('static_demo_scene_risk');
+    });
+
     it('flags abstract metaphor explanations instead of physical situations', () => {
         const article = {
             raw_title: 'Predicting model behavior before release by simulating deployment',
