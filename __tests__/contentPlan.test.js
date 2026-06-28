@@ -1021,7 +1021,7 @@ describe('content plan fallback', () => {
 
         expect(prompt).toContain('Deployment simulation / pre-release behavior stories');
         expect(prompt).toContain('hard-ban simulation chambers');
-        expect(prompt).toContain('crash-test track');
+        expect(prompt).toContain('crash-test sled');
     });
 
     it('removes generic data streams from image prompts', () => {
@@ -1241,6 +1241,7 @@ describe('content plan prompt', () => {
         expect(plan.creative_director.quality_flags).not.toContain('weak_ragebait_visual_risk');
         expect(plan.creative_director.quality_flags).not.toContain('banned_deployment_chamber_risk');
         expect(plan.creative_director.quality_flags).not.toContain('unclear_deployment_simulation_risk');
+        expect(plan.creative_director.quality_flags).not.toContain('founder_dominates_deployment_risk');
     });
 
     it('flags unsupported competitor inventions in deployment-simulation stories', () => {
@@ -1312,5 +1313,40 @@ describe('content plan prompt', () => {
         }, article, brief, fallback);
 
         expect(plan.copy.headline_ru).toBe('OPENAI ЗАСТАВЛЯЕТ ИИ ПРОЙТИ КРАШ-ТЕСТ');
+    });
+
+    it('rejects deployment crash-test plans where the founder dominates the frame', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'OPENAI ЗАСТАВЛЯЕТ ИИ ПРОХОДИТЬ ЖЕСТКИЙ КРАШ-ТЕСТ',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Harsh-flash tabloid photo. Sam Altman stands in the foreground holding a remote and clipboard while a black-box AI server unit is somewhere on a crash-test track behind him.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'OpenAI stress-tests models before release.',
+                concepts: [
+                    { name: 'portrait remote', visual_style: 'harsh-flash photo', scene_context: 'lab test track', satirical_action: 'Sam Altman stands in the foreground holding a remote while the crash-test happens behind him', why_location_fits: 'deployment simulation', why_it_works: 'has test props', risk: 'portrait', thumbnail_score: 7 },
+                    { name: 'inspection', visual_style: 'security camera screenshot', scene_context: 'inspection bay', satirical_action: 'auditors run a safety inspection', why_location_fits: 'predicting failures', why_it_works: 'clear safety check', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'red-team drill', visual_style: 'paparazzi flash', scene_context: 'fake deployment drill', satirical_action: 'engineers panic during a failure drill', why_location_fits: 'deployment simulation', why_it_works: 'clear rehearsal', risk: 'safe', thumbnail_score: 8 }
+                ],
+                selected_concept: 'portrait remote',
+                rejected_obvious_metaphor: 'simulation chamber',
+                selection_reason: 'dramatic'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('founder_dominates_deployment_risk');
     });
 });

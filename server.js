@@ -1126,6 +1126,7 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
             'obvious_metaphor_risk',
             'banned_deployment_chamber_risk',
             'unclear_deployment_simulation_risk',
+            'founder_dominates_deployment_risk',
             'static_demo_scene_risk',
             'abstract_explanation_risk',
             'weak_ragebait_visual_risk',
@@ -1164,6 +1165,7 @@ Hard requirements:
 - If the prompt uses "premium", "natural lighting", "clean negative space", "futuristic runway", "high-tech server room", or a polished founder portrait, rewrite it into a messier conflict scene with people reacting.
 - For deployment-simulation / pre-release behavior stories, never use a simulation chamber, test chamber, transparent chamber, quarantine booth, transparent box, or a public figure locked inside a chamber.
 - For deployment-simulation / pre-release behavior stories, the visual must clearly read as pre-release crash-test, stress-test, safety inspection, red-team drill, emergency drill, or fake deployment disaster rehearsal. Do not use generic bouncers, red ropes, access cards, or "not letting AI through a gate" as the main idea unless an obvious crash-test/stress-test setup is also visible.
+- For deployment-simulation / pre-release behavior stories, the crash-test setup must be the central subject. Do not compose it as a founder portrait with a remote/clipboard. Put the black-box model/server unit, test rig, crash-test sled, obstacle course, or inspection table in the foreground/center; the public figure can stand to the side as inspector/controller.
 - If the scene is just a founder presenting/unveiling a chamber, vault, booth, box, demo room, or conference-stage prop, reject it. Add a sharper public power mechanic: someone blocked, embarrassed, denied access, forced into a test, caught by harsh flash, held behind a velvet rope, or watching helplessly while another person controls the desired object.
 - Do not explain the metaphor with "representing", "symbolizes", "highlighting", or "stands for". If the prompt needs those words, rewrite it as a physical situation that is obvious without explanation.
 - Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.
