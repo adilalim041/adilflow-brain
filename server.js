@@ -1125,6 +1125,7 @@ async function generateContentPlanWithGPT(article, brief, nicheConfig) {
             'non_english_image_prompt',
             'obvious_metaphor_risk',
             'banned_deployment_chamber_risk',
+            'unclear_deployment_simulation_risk',
             'static_demo_scene_risk',
             'abstract_explanation_risk',
             'weak_ragebait_visual_risk',
@@ -1155,12 +1156,14 @@ Hard requirements:
 - visual.image_prompt must be written in English only.
 - Keep product/model/person/company names exactly as article_brief states them.
 - Headline must be clear native Russian: no rare invented verbs, broken wordplay, or machine-translated phrases.
+- Headline must communicate the actual article meaning first, then add punch. If the reader cannot tell what the news is about, rewrite it.
 - Do not turn "joins", "uses", "integrates", "adds", or "partners with" into "buys/acquires" unless the source explicitly says acquisition or purchase.
 - Do not add competitors/rivals as the main victims unless the source article or article_brief explicitly mentions competition/rivals. If the article is about internal testing, make the models, release gate, test process, engineers, reviewers, or executives the target instead.
 - Make the satire obvious in 2 seconds: visible power mechanic, embarrassment, restraint, status reversal, or someone holding control.
 - Make the visual feel like tabloid/ragebait reportage, not a respectable tech illustration: harsh flash, leaked phone photo, paparazzi/press scrum, security-camera screenshot, messy public awkwardness, or dirty backstage frame.
 - If the prompt uses "premium", "natural lighting", "clean negative space", "futuristic runway", "high-tech server room", or a polished founder portrait, rewrite it into a messier conflict scene with people reacting.
-- For deployment-simulation / pre-release behavior stories, never use a simulation chamber, test chamber, transparent chamber, quarantine booth, transparent box, or a public figure locked inside a chamber. The joke must be a social/public power scene: bouncer, denied badge, surprise inspection, harsh-flash interrogation table, security checkpoint, or people blocked from release access.
+- For deployment-simulation / pre-release behavior stories, never use a simulation chamber, test chamber, transparent chamber, quarantine booth, transparent box, or a public figure locked inside a chamber.
+- For deployment-simulation / pre-release behavior stories, the visual must clearly read as pre-release crash-test, stress-test, safety inspection, red-team drill, emergency drill, or fake deployment disaster rehearsal. Do not use generic bouncers, red ropes, access cards, or "not letting AI through a gate" as the main idea unless an obvious crash-test/stress-test setup is also visible.
 - If the scene is just a founder presenting/unveiling a chamber, vault, booth, box, demo room, or conference-stage prop, reject it. Add a sharper public power mechanic: someone blocked, embarrassed, denied access, forced into a test, caught by harsh flash, held behind a velvet rope, or watching helplessly while another person controls the desired object.
 - Do not explain the metaphor with "representing", "symbolizes", "highlighting", or "stands for". If the prompt needs those words, rewrite it as a physical situation that is obvious without explanation.
 - Reject vague abstractions like "battle for control", "symbols of power", "comedy of errors", "tense people in a boardroom", or "discussion with documents". Each concept needs one concrete absurd foreground action.

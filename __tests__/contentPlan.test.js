@@ -1021,7 +1021,7 @@ describe('content plan fallback', () => {
 
         expect(prompt).toContain('Deployment simulation / pre-release behavior stories');
         expect(prompt).toContain('hard-ban simulation chambers');
-        expect(prompt).toContain('launch-party bouncer');
+        expect(prompt).toContain('crash-test track');
     });
 
     it('removes generic data streams from image prompts', () => {
@@ -1168,6 +1168,7 @@ describe('content plan prompt', () => {
         }, article, brief, fallback);
 
         expect(plan.creative_director.quality_flags).toContain('headline_quality_risk');
+        expect(plan.creative_director.quality_flags).toContain('unclear_deployment_simulation_risk');
     });
 
     it('flags polished respectable visuals as weak ragebait', () => {
@@ -1221,24 +1222,25 @@ describe('content plan prompt', () => {
                 cta_ru: 'Follow'
             },
             visual: {
-                image_prompt: 'Leaked harsh-flash phone photo of Sam Altman acting as a launch-party bouncer, blocking sweating AI engineers behind a velvet rope while security guards hold back a noisy crowd at a lab hallway gate.',
+                image_prompt: 'Leaked harsh-flash phone photo of Sam Altman as a strict pre-release safety inspector watching a blank black-box AI server unit strapped to a crash-test sled on a messy lab test track, engineers sweating and scrambling as the unit slams through an obstacle course before release.',
                 angle: 'editorial-satire'
             },
             creative_director: {
-                human_conflict: 'Sam controls release access while engineers panic publicly.',
+                human_conflict: 'Sam forces a pre-release model through a visible stress test while engineers panic publicly.',
                 concepts: [
-                    { name: 'bouncer', visual_style: 'leaked harsh-flash phone photo', scene_context: 'lab hallway gate', satirical_action: 'Sam blocks sweating engineers behind a velvet rope', why_location_fits: 'deployment release gate', why_it_works: 'visible access denial', risk: 'safe', thumbnail_score: 9 },
-                    { name: 'camera catch', visual_style: 'security camera screenshot', scene_context: 'test entrance', satirical_action: 'guards hold back a crowd trying to enter', why_location_fits: 'pre-release testing', why_it_works: 'public blockage', risk: 'safe', thumbnail_score: 8 },
-                    { name: 'press scrum', visual_style: 'paparazzi flash', scene_context: 'launch corridor', satirical_action: 'reporters catch executives sweating while Sam keeps the gate closed', why_location_fits: 'release pressure', why_it_works: 'embarrassment is visible', risk: 'safe', thumbnail_score: 8 }
+                    { name: 'crash-test sled', visual_style: 'leaked harsh-flash phone photo', scene_context: 'messy lab test track', satirical_action: 'Sam watches a blank black-box AI server unit strapped to a crash-test sled slam through obstacles before release', why_location_fits: 'deployment simulation is a pre-release stress test', why_it_works: 'the testing meaning is instantly visible', risk: 'safe', thumbnail_score: 9 },
+                    { name: 'safety inspection', visual_style: 'security camera screenshot', scene_context: 'pre-release inspection bay', satirical_action: 'engineers panic while auditors run a failure drill around the black-box model unit', why_location_fits: 'the article is about predicting failures before release', why_it_works: 'public inspection shows the real process', risk: 'safe', thumbnail_score: 8 },
+                    { name: 'red-team drill', visual_style: 'paparazzi flash', scene_context: 'fake deployment disaster rehearsal', satirical_action: 'Sam triggers a mock deployment alarm while engineers scramble around the test rig', why_location_fits: 'the story is about simulating deployment behavior', why_it_works: 'the rehearsal is clear and funny', risk: 'safe', thumbnail_score: 8 }
                 ],
-                selected_concept: 'bouncer',
+                selected_concept: 'crash-test sled',
                 rejected_obvious_metaphor: 'simulation chamber',
-                selection_reason: 'fastest conflict'
+                selection_reason: 'clearest pre-release testing metaphor'
             }
         }, article, brief, fallback);
 
         expect(plan.creative_director.quality_flags).not.toContain('weak_ragebait_visual_risk');
         expect(plan.creative_director.quality_flags).not.toContain('banned_deployment_chamber_risk');
+        expect(plan.creative_director.quality_flags).not.toContain('unclear_deployment_simulation_risk');
     });
 
     it('flags unsupported competitor inventions in deployment-simulation stories', () => {
