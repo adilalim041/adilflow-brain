@@ -903,6 +903,41 @@ describe('content plan fallback', () => {
         expect(plan.creative_director.quality_flags).not.toContain('static_demo_scene_risk');
     });
 
+    it('still flags key-only chamber scenes without a real power mechanic', () => {
+        const article = {
+            raw_title: 'Predicting model behavior before release by simulating deployment',
+            raw_summary: 'OpenAI simulates deployment before release.'
+        };
+        const brief = buildFallbackArticleBrief(article);
+        const fallback = buildFallbackContentPlan(article, brief);
+        const plan = normalizeContentPlan({
+            source: 'llm',
+            copy: {
+                headline_ru: 'SAM ALTMAN ЗАПИРАЕТ ДОСТУП К ИСПЫТАНИЯМ ИИ',
+                caption_ru: 'OpenAI simulates deployment before release.',
+                hashtags: '#OpenAI #AI',
+                cta_ru: 'Follow'
+            },
+            visual: {
+                image_prompt: 'Sam Altman stands next to a futuristic chamber holding a large key while experts watch anxiously and peek inside.',
+                angle: 'editorial-satire'
+            },
+            creative_director: {
+                human_conflict: 'Experts watch anxiously.',
+                concepts: [
+                    { name: 'key chamber', visual_style: 'premium photo', scene_context: 'conference hall', satirical_action: 'Sam stands beside a chamber holding a key', why_location_fits: 'AI testing', why_it_works: 'shows control', risk: 'static', thumbnail_score: 7 },
+                    { name: 'peek', visual_style: 'press photo', scene_context: 'demo room', satirical_action: 'experts try to peek inside a chamber', why_location_fits: 'deployment simulation', why_it_works: 'shows curiosity', risk: 'static', thumbnail_score: 7 },
+                    { name: 'door', visual_style: 'editorial', scene_context: 'conference hall', satirical_action: 'experts watch anxiously near a locked door', why_location_fits: 'release testing', why_it_works: 'shows control', risk: 'static', thumbnail_score: 7 }
+                ],
+                selected_concept: 'key chamber',
+                rejected_obvious_metaphor: 'robot in a box',
+                selection_reason: 'clear'
+            }
+        }, article, brief, fallback);
+
+        expect(plan.creative_director.quality_flags).toContain('static_demo_scene_risk');
+    });
+
     it('flags abstract metaphor explanations instead of physical situations', () => {
         const article = {
             raw_title: 'Predicting model behavior before release by simulating deployment',
